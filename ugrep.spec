@@ -57,3 +57,7 @@ etc.  A faster, user-friendly and compatible grep replacement.
 /usr/share/zsh/site-functions/_ug+
 /usr/share/zsh/site-functions/_ugrep
 /usr/share/zsh/site-functions/_ugrep+
+
+%changelog
+* Sun Jan 28 2024 - Danie de Jager - 4.5.2-1
+- Initial Build on AL2023
