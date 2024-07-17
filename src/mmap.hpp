@@ -50,6 +50,7 @@
 #if defined(HAVE_MMAP) && MAX_MMAP_SIZE > 0
 # include <sys/mman.h>
 # include <sys/stat.h>
+# include <sys/types.h>
 # include <limits>
 # ifndef MAP_ANONYMOUS
 #  define MAP_ANONYMOUS MAP_ANON
@@ -76,7 +77,7 @@ class MMap {
   }
 
   // attempt to mmap the given file-based input, return true if successful with base and size
-  bool file(reflex::Input& input, const char*& base, size_t& size)
+  bool file(reflex::Input& input, const char *& base, size_t& size)
   {
     base = NULL;
     size = 0;
@@ -110,7 +111,7 @@ class MMap {
       if (mmap_base == MAP_FAILED)
         mmap_base = NULL;
       else
-        madvise(mmap_base, mmap_size, MADV_SEQUENTIAL);
+        madvise(reinterpret_cast<caddr_t>(mmap_base), mmap_size, MADV_SEQUENTIAL); // caddr_t is a pointer type cast from void*
     }
 
     if (mmap_base != NULL)

@@ -55,19 +55,19 @@ class CNF {
   // a pattern in the CNF is a string or undefined (a NULL smart pointer)
   typedef std::unique_ptr<std::string> Pattern;
 
-  // a term in the CNF is a string/NULL, where the first is an OR pattern (with alternations) or NULL and the rest are OR-NOT alternate patterns
+  // a term in the CNF is a string/NULL, where the first is an OR pattern (with alternations) or NULL and the rest are ALT-NOT alternate patterns
   typedef std::list<Pattern> Term;
 
-  // a CNF is a collection of terms, an AND-list of OR-term lists of (NOT-)patterns
+  // a CNF is a collection of terms, an AND-list of ALT-term lists of (NOT-)patterns
   typedef std::list<Term> Terms;
 
   // pattern mask values to indicate the type of regex pattern argument to populate CNF
   struct PATTERN {
     enum {
-      NA   = 0, // -e PATTERN
-      NEG  = 1, // -N PATTERN
-      NOT  = 2, // --not [-e] PATTERN
-      TERM = 4, // to create a new AND-term with empty OR-list in the CNF
+      ALT = 0, // -e PATTERN
+      NEG = 1, // -N PATTERN
+      NOT = 2, // --not [-e] PATTERN
+      AND = 4, // to create a new AND-term with empty ALT-list in the CNF
     };
     PATTERN(int mask) : mask(mask) { }
     operator int() const { return mask; }
@@ -92,19 +92,19 @@ class CNF {
     return terms.empty() || (terms.size() == 1 && terms.front().empty());
   }
 
-  // return true if CNF is undefined or a singleton with just one pattern w/o OR-NOT patterns, after prune()
+  // return true if CNF is undefined or a singleton with just one pattern w/o ALT-NOT patterns, after prune()
   bool singleton_or_undefined() const
   {
     return terms.empty() || (terms.size() == 1 && terms.front().size() == 1 && terms.front().front());
   }
 
-  // return true if the first OR-list term is an empty pattern
+  // return true if the first ALT-list term is an empty pattern
   bool first_empty() const
   {
     return !terms.empty() && !terms.front().empty() && terms.front().front() && terms.front().front()->empty();
   }
 
-  // add a new OR-list term to CNF AND-list
+  // add a new ALT-list term to CNF AND-list
   void new_term()
   {
     if (terms.empty())
@@ -113,22 +113,22 @@ class CNF {
     terms.emplace_back();
   }
 
-  // add an OR pattern or OR-NOT pattern, optionally negated (option -N)
+  // add an ALT pattern or ALT-NOT pattern, optionally negated (option -N)
   void new_pattern(PATTERN mask, const char *pattern);
 
-  // compile --bool search query into operator tree, normalize to CNF, and populate CNF AND-list of OR-term lists
+  // compile --bool search query into operator tree, normalize to CNF, and populate CNF AND-list of ALT-term lists
   void compile(const char *pattern)
   {
     OpTree(pattern, terms);
   }
 
-  // return the CNF AND-list of OR-term lists
+  // return the CNF AND-list of ALT-term lists
   const Terms& lists() const
   {
     return terms;
   }
 
-  // prune empty OR-terms and OR-terms with empty patterns that match anything
+  // prune empty ALT-terms and ALT-terms with empty patterns that match anything
   void prune();
 
   // split the patterns at newlines, when present
@@ -137,10 +137,10 @@ class CNF {
   // report the CNF in readable form
   void report(FILE *output) const;
 
-  // return all OR-terms of the CNF adjoined
+  // return all ALT-terms of the CNF adjoined
   std::string adjoin() const;
 
-  // return the first OR-terms of the CNF
+  // return the first ALT-terms of the CNF
   std::string first() const;
 
  protected:
@@ -152,7 +152,7 @@ class CNF {
 
     OpTree(Op op) : op(op) { }
 
-    // parse a pattern, normalize to CNF, and convert to a CNF AND-list of OR-term lists
+    // parse a pattern, normalize to CNF, and convert to a CNF AND-list of ALT-term lists
     OpTree(const char *pattern, Terms& terms)
     {
       op = AND;
@@ -177,7 +177,7 @@ class CNF {
     // normalize operator tree to CNF
     void normalize(bool invert = false);
 
-    // convert CNF-normalized operator tree to terms, a CNF AND-list of OR-term lists
+    // convert CNF-normalized operator tree to terms, a CNF AND-list of ALT-term lists
     void convert(Terms& terms);
 
     // add a [NOT] term of the operator tree to terms
@@ -186,7 +186,7 @@ class CNF {
     // skip space
     static void skip_space(const char *& pattern)
     {
-      while (isspace(*pattern))
+      while (*pattern != '\n' && isspace(static_cast<unsigned char>(*pattern)))
         ++pattern;
     }
 
@@ -196,19 +196,19 @@ class CNF {
       switch (op)
       {
         case AND:
-          if (strncmp(pattern, "AND", 3) != 0 || !isspace(pattern[3]))
+          if (strncmp(pattern, "AND", 3) != 0 || !isspace(static_cast<unsigned char>(pattern[3])))
             break;
           pattern += 3;
           return true;
 
         case OR:
-          if (strncmp(pattern, "OR", 2) != 0 || !isspace(pattern[2]))
+          if (strncmp(pattern, "OR", 2) != 0 || !isspace(static_cast<unsigned char>(pattern[2])))
             break;
           pattern += 2;
           return true;
 
         case NOT:
-          if (strncmp(pattern, "NOT", 3) != 0 || !isspace(pattern[3]))
+          if (strncmp(pattern, "NOT", 3) != 0 || !isspace(static_cast<unsigned char>(pattern[3])))
             break;
           pattern += 3;
           return true;
@@ -220,18 +220,20 @@ class CNF {
       return false;
     }
 
-    // return true if look ahead for a | or OR then return true when found and skip over it, otherwise return false
+    // return true if at a |, \n or OR then return true when found and skip over it, otherwise return false
     static bool is_alternation(const char *& pattern)
     {
       const char *lookahead = pattern;
 
       skip_space(lookahead);
 
-      if (*lookahead != '|' && !is_oper(OR, lookahead))
-        return false;
-
-      while (*lookahead == '|')
+      if (*lookahead == '\n')
         ++lookahead;
+      else if (*lookahead == '|')
+        while (*++lookahead == '|')
+          continue;
+      else if (!is_oper(OR, lookahead))
+        return false;
 
       skip_space(lookahead);
 
@@ -273,11 +275,12 @@ class CNF {
     const char *xleft = flag_basic_regexp ? "^\\(" : "^(?:";
     const char *xright = flag_basic_regexp ? "\\)$" : ")$";
 #if defined(HAVE_PCRE2)
-    const char *wleft = flag_basic_regexp ? "\\<\\(" : flag_perl_regexp ? "(?<!\\w)(?:" : "\\<(";
-    const char *wright = flag_basic_regexp ? "\\)\\>" : flag_perl_regexp ? ")(?!\\w)" : ")\\>";
+    // PCRE2_EXTRA_MATCH_WORD does not work and \b(?:regex)\b is not correct anyway, so we roll out our own
+    const char *wleft = flag_perl_regexp ? "(?<!\\w)(?:" : NULL;
+    const char *wright = flag_perl_regexp ? ")(?!\\w)" : NULL;
 #else // Boost.Regex
-    const char *wleft = flag_basic_regexp ? "\\<\\(" : flag_perl_regexp ? "(?<![[:word:]])(?:" : "\\<(";
-    const char *wright = flag_basic_regexp ? "\\)\\>" : flag_perl_regexp ? ")(?![[:word:]])" : ")\\>";
+    const char *wleft = flag_perl_regexp ? "(?<![[:word:]])(?:" : NULL;
+    const char *wright = flag_perl_regexp ? ")(?![[:word:]])" : NULL;
 #endif
 
     // patterns that start with ^ or end with $ are already anchored
@@ -288,19 +291,20 @@ class CNF {
     }
     else if (flag_line_regexp)
     {
+      // make the regex line-anchored
       if (!pattern.empty())
         pattern.insert(0, xleft).append(xright);
       else
         pattern.assign("^$");
     }
-    else if (flag_word_regexp)
+    else if (!pattern.empty() && flag_word_regexp && wleft != NULL && wright != NULL)
     {
-      if (!pattern.empty())
-        pattern.insert(0, wleft).append(wright);
+      // make the regex word-anchored (or done with matcher option W instead of \< and \>)
+      pattern.insert(0, wleft).append(wright);
     }
   }
 
-  // CNF terms, an AND-list of OR-term lists of string/NULL patterns
+  // CNF terms, an AND-list of ALT-term lists of string/NULL patterns
   Terms terms;
 
 };

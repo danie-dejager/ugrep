@@ -37,8 +37,8 @@
 #ifndef UGREP_HPP
 #define UGREP_HPP
 
-// ugrep version
-#define UGREP_VERSION "5.0.0"
+// DO NOT ALTER THIS LINE: updated by makemake.sh and we need it physically here for MSVC++ build from source
+#define UGREP_VERSION "6.2.0"
 
 // disable mmap because mmap is almost always slower than the file reading speed improvements since 3.0.0
 #define WITH_NO_MMAP
@@ -65,9 +65,9 @@
 # define OS_WIN
 #endif
 
-#ifdef OS_WIN
+#ifdef OS_WIN // compiling for a windows OS
 
-// disable min/max macros to use std::min and std::max
+// disable legacy min/max macros so we can use std::min and std::max
 #define NOMINMAX
 
 #include <windows.h>
@@ -163,7 +163,7 @@ inline char *getcwd0()
   return strdup(cwd.c_str());
 }
 
-// open Unicode wide string UTF-8 encoded filename
+// open UTF-8 encoded Unicode filename
 inline int fopenw_s(FILE **file, const char *filename, const char *mode)
 {
   *file = NULL;
@@ -192,9 +192,7 @@ inline int fopenw_s(FILE **file, const char *filename, const char *mode)
   return 0;
 }
 
-#else
-
-// not compiling for a windows OS
+#else // not compiling for a windows OS
 
 #define _FILE_OFFSET_BITS 64
 
@@ -223,6 +221,10 @@ inline int fopenw_s(FILE **file, const char *filename, const char *mode)
 
 #ifdef HAVE_SYS_PARAM_H
 # include <sys/param.h>
+#endif
+
+#ifdef HAVE_SYS_MOUNT_H
+# include <sys/mount.h>
 #endif
 
 #ifdef HAVE_SYS_CPUSET_H
@@ -256,7 +258,7 @@ inline int dupenv_s(char **ptr, const char *name)
   return 0;
 }
 
-// Open Unicode wide string UTF-8 encoded filename
+// Open UTF-8 encoded Unicode filename
 inline int fopenw_s(FILE **file, const char *filename, const char *mode)
 {
   *file = NULL;
@@ -401,7 +403,7 @@ inline const char *utf8skipn(const char *s, size_t n, size_t k)
 # define DEFAULT_MAX_MMAP_SIZE MAX_MMAP_SIZE
 #endif
 
-// pretty is disabled by default for ugrep (always enabled by ug), unless enabled with WITH_PRETTY
+// pretty is disabled by default for ugrep (but always enabled by ug), unless enabled with WITH_PRETTY
 #ifdef WITH_PRETTY
 # define DEFAULT_PRETTY Static::AUTO
 #else

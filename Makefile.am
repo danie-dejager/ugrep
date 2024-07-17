@@ -4,7 +4,7 @@ SUBDIRS += lzma/C
 endif
 SUBDIRS += src
 
-man1_MANS = man/ugrep.1
+man1_MANS = man/ugrep.1 man/ugrep-indexer.1
 
 EXTRA_DIST = README.md LICENSE.txt CONTRIBUTING.md CODE_OF_CONDUCT.md
 
@@ -30,11 +30,12 @@ all-local:	cp2bin
 
 .PHONY:		cp2bin
 
-# to copy the ugrep binary to the local ugrep/bin/ugrep and ugrep/bin/ug
-cp2bin:		$(top_builddir)/src/ugrep$(EXEEXT)
-		rm -f $(top_builddir)/bin/ugrep$(EXEEXT)
-		mkdir -p $(top_builddir)/bin && \
-		  cp -f $< $(top_builddir)/bin/ugrep$(EXEEXT) && \
+# to copy the ugrep binary to the local ugrep/bin/ugrep and ugrep/bin/ug (symlinks DO NOT WORK for ug with bash when installed)
+cp2bin:		$(top_builddir)/src/ugrep$(EXEEXT) $(top_builddir)/src/ugrep-indexer$(EXEEXT)
+		@rm -f $(top_builddir)/bin/ugrep$(EXEEXT)
+		@rm -f $(top_builddir)/bin/ugrep-indexer$(EXEEXT)
+		@mkdir -p $(top_builddir)/bin && \
+		  cp -f $^ $(top_builddir)/bin/ && \
 		  cd $(top_builddir)/bin && \
 		  rm -f ug$(EXEEXT) && \
 		  cp -f ugrep$(EXEEXT) ug$(EXEEXT)
@@ -43,14 +44,14 @@ cp2bin:		$(top_builddir)/src/ugrep$(EXEEXT)
 		@echo
 
 install-exec-hook:
-		cp -f $(top_builddir)/bin/ugrep+ $(top_builddir)/bin/ug+ $(DESTDIR)$(bindir)
-		rm -f $(DESTDIR)$(bindir)/ug$(EXEEXT)
-		cd $(DESTDIR)$(bindir) && cp -f ugrep$(EXEEXT) ug$(EXEEXT)
+		@cp -f $(top_builddir)/bin/ugrep+ $(top_builddir)/bin/ug+ $(DESTDIR)$(bindir)
+		@rm -f $(DESTDIR)$(bindir)/ug$(EXEEXT)
+		@cd $(DESTDIR)$(bindir) && cp -f ugrep$(EXEEXT) ug$(EXEEXT)
 
 install-data-hook:
-		mkdir -p $(DESTDIR)$(datadir)/ugrep && \
+		@mkdir -p $(DESTDIR)$(datadir)/ugrep && \
 		  cp -rf $(top_srcdir)/patterns $(DESTDIR)$(datadir)/ugrep/
-		cd $(DESTDIR)$(mandir)/man1 && \
+		@cd $(DESTDIR)$(mandir)/man1 && \
 		  rm -f ug.1 && \
 		  $(LN_S) ugrep.1 ug.1
 		@if [ "x$(bashcompletiondir)" != "x" ]; then \
@@ -67,9 +68,9 @@ install-data-hook:
 		fi
 		@if [ "x$(zshcompletiondir)" != "x" ]; then \
 		  cd $(DESTDIR)$(zshcompletiondir) && \
-		    sed -e 's/^#compdef ug/#compdef ug+/' _ug > _ug+ && \
-		    sed -e 's/^#compdef ug/#compdef ugrep/' _ug > _ugrep && \
-		    sed -e 's/^#compdef ug/#compdef ugrep+/' _ug > _ugrep+; \
+		    $(LN_S) -f _ug _ug+ && \
+		    $(LN_S) -f _ug _ugrep && \
+		    $(LN_S) -f _ug _ugrep+; \
 		fi
 		@echo " ______________________________________________________ "; \
 		 echo "|                                                      |"; \
@@ -116,9 +117,10 @@ install-data-hook:
 		 echo "|______________________________________________________|";
 
 uninstall-hook:
-		rm -f $(DESTDIR)$(bindir)/ug$(EXEEXT) $(DESTDIR)$(bindir)/ugrep$(EXEEXT)
-		rm -f $(DESTDIR)$(bindir)/ug+ $(DESTDIR)$(bindir)/ugrep+
-		rm -rf $(DESTDIR)$(datadir)/ugrep
+		@rm -f $(DESTDIR)$(bindir)/ug$(EXEEXT) $(DESTDIR)$(bindir)/ugrep$(EXEEXT)
+		@rm -f $(DESTDIR)$(bindir)/ugrep-indexer$(EXEEXT)
+		@rm -f $(DESTDIR)$(bindir)/ug+ $(DESTDIR)$(bindir)/ugrep+
+		@rm -rf $(DESTDIR)$(datadir)/ugrep
 
 .PHONY:		test
 
@@ -126,11 +128,11 @@ test:		${UGREP}
 		@echo
 		@echo "*** SINGLE-THREADED TESTS ***"
 		@echo
-		cd $(top_srcdir)/tests && env UGREP_ABS_PATH=${UGREP} CONFIGH_ABS_PATH=${CONFIGH} ./verify.sh -J1
+		@cd $(top_srcdir)/tests && env UGREP_ABS_PATH=${UGREP} CONFIGH_ABS_PATH=${CONFIGH} ./verify.sh -J1
 		@echo
 		@echo "*** MULTI-THREADED TESTS ***"
 		@echo
-		cd $(top_srcdir)/tests && env UGREP_ABS_PATH=${UGREP} CONFIGH_ABS_PATH=${CONFIGH} ./verify.sh
+		@cd $(top_srcdir)/tests && env UGREP_ABS_PATH=${UGREP} CONFIGH_ABS_PATH=${CONFIGH} ./verify.sh
 		@echo
 		@echo "OK"
 		@echo

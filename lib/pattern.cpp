@@ -45,10 +45,10 @@
 /// DFA compaction: -1 == reverse order edge compression (best); 1 == edge compression; 0 == no edge compression.
 /** Edge compression reorders edges to produce fewer tests when executed in the compacted order.
     For example ([a-cg-ik]|d|[e-g]|j|y|[x-z]) after reverse edge compression has only 2 edges:
-    c1 = m.FSM_CHAR();
-    if ('x' <= c1 && c1 <= 'z') goto S3;
-    if ('a' <= c1 && c1 <= 'k') goto S3;
-    return m.FSM_HALT(c1);
+    c = m.FSM_CHAR();
+    if ('x' <= c && c <= 'z') goto S3;
+    if ('a' <= c && c <= 'k') goto S3;
+    return m.FSM_HALT(c);
 */
 #define WITH_COMPACT_DFA -1
 
@@ -59,8 +59,6 @@
     DBGLOGA(" (%u)", (p).accepts()); \
     if ((p).lazy()) \
       DBGLOGA("?%u", (p).lazy()); \
-    if ((p).greedy()) \
-      DBGLOGA("!"); \
   } \
   else \
   { \
@@ -72,8 +70,6 @@
       DBGLOGA("?%u", (p).lazy()); \
     if ((p).anchor()) \
       DBGLOGA("^"); \
-    if ((p).greedy()) \
-      DBGLOGA("!"); \
     if ((p).ticked()) \
       DBGLOGA("'"); \
     if ((p).negate()) \
@@ -181,6 +177,7 @@ void Pattern::init(const char *options, const uint8_t *pred)
   bmd_ = 0;
   npy_ = 0;
   one_ = false;
+  bol_ = false;
   vno_ = 0;
   eno_ = 0;
   hno_ = 0;
@@ -191,6 +188,7 @@ void Pattern::init(const char *options, const uint8_t *pred)
   ams_ = 0.0;
   cut_ = 0;
   lbk_ = 0;
+  lbm_ = 0;
   cbk_.reset();
   fst_.reset();
   if (opc_ != NULL || fsm_ != NULL )
@@ -200,36 +198,43 @@ void Pattern::init(const char *options, const uint8_t *pred)
       len_ = pred[0];
       min_ = pred[1] & 0x0f;
       one_ = pred[1] & 0x10;
+      bol_ = pred[1] & 0x40;
       memcpy(chr_, pred + 2, len_);
-      size_t n = len_ + 2;
+      size_t n = 2 + len_;
       if (len_ == 0)
       {
+        // get bitap bit_[] parameters
         for (size_t i = 0; i < 256; ++i)
           bit_[i] = ~pred[i + n];
         n += 256;
       }
-      if (min_ >= 4)
+      if (min_ < 4)
       {
-        for (size_t i = 0; i < Const::HASH; ++i)
-          pmh_[i] = ~pred[i + n];
-      }
-      else
-      {
+        // get predict match PM4 pma_[] parameters
         for (size_t i = 0; i < Const::HASH; ++i)
           pma_[i] = ~pred[i + n];
       }
+      else
+      {
+        // get predict match hash pmh_[] parameters
+        for (size_t i = 0; i < Const::HASH; ++i)
+          pmh_[i] = ~pred[i + n];
+      }
+      n += Const::HASH;
       if ((pred[1] & 0x20) != 0)
       {
-        n += Const::HASH;
+        // get lookback parameters lbk_ lbm_ and cbk_[] after s-t cut and first s-t cut pattern characters fst_[]
         lbk_ = pred[n + 0] | (pred[n + 1] << 8);
         lbm_ = pred[n + 2] | (pred[n + 3] << 8);
         for (size_t i = 0; i < 256; ++i)
           cbk_.set(i, pred[n + 4 + (i >> 3)] & (1 << (i & 7)));
         for (size_t i = 0; i < 256; ++i)
-          fst_.set(i, pred[n + 32 + 4 + (i >> 3)] & (1 << (i & 7)));
+          fst_.set(i, pred[n + 4 + 32 + (i >> 3)] & (1 << (i & 7)));
+        n += 4 + 32 + 32;
       }
       else
       {
+        // get first pattern characters fst_[] from bitap
         for (size_t i = 0; i < 256; ++i)
           fst_.set(i, (bit_[i] & 1) == 0);
       }
@@ -239,10 +244,11 @@ void Pattern::init(const char *options, const uint8_t *pred)
   {
     Positions startpos;
     Follow    followpos;
+    Lazypos   lazypos;
     Mods      modifiers;
     Map       lookahead;
     // parse the regex pattern to construct the followpos NFA without epsilon transitions
-    parse(startpos, followpos, modifiers, lookahead);
+    parse(startpos, followpos, lazypos, modifiers, lookahead);
     // start state = startpos = firstpost of the followpos NFA, also merge the tree DFA root when non-NULL
 #ifdef WITH_TREE_DFA
     DFA::State *start;
@@ -275,12 +281,12 @@ void Pattern::init(const char *options, const uint8_t *pred)
       // combine tree DFA (if any) with the DFA start state to construct a combined DFA with subset construction
       start = dfa_.state(tfa_.root(), startpos);
       // compile the NFA into a DFA
-      compile(start, followpos, modifiers, lookahead);
+      compile(start, followpos, lazypos, modifiers, lookahead);
     }
 #else
     DFA::State *start = dfa_.state(tfa_.tree, startpos);
     // compile the NFA into a DFA
-    compile(start, followpos, modifiers, lookahead);
+    compile(start, followpos, lazypos, modifiers, lookahead);
 #endif
     // assemble DFA opcode tables or direct code
     assemble(start);
@@ -313,8 +319,7 @@ void Pattern::init(const char *options, const uint8_t *pred)
     }
     // needle count and frequency thresholds to enable needle-based search
     uint16_t pinmax = 8;
-    uint8_t freqmax1 = 91; // one position
-    uint8_t freqmax2 = 251; // two positions
+    uint8_t freqmax = 251;
 #if defined(HAVE_AVX512BW) || defined(HAVE_AVX2) || defined(HAVE_SSE2)
     if (have_HW_AVX512BW() || have_HW_AVX2())
       pinmax = 16;
@@ -333,7 +338,6 @@ void Pattern::init(const char *options, const uint8_t *pred)
     lcs_ = 0;
     uint16_t nlcp = 65535; // max and undefined
     uint16_t nlcs = 65535; // max and undefined
-    uint16_t freqsum = 0;
     uint8_t freqlcp = 255; // max
     uint8_t freqlcs = 255; // max
     size_t min = (min_ == 0 ? 1 : min_);
@@ -341,7 +345,6 @@ void Pattern::init(const char *options, const uint8_t *pred)
     {
       Pred mask = 1 << k;
       uint16_t n = 0;
-      uint16_t sum = 0;
       uint8_t max = 0;
       // at position k count the matching characters and find the max character frequency
       for (uint16_t i = 0; i < 256; ++i)
@@ -350,14 +353,13 @@ void Pattern::init(const char *options, const uint8_t *pred)
         {
           ++n;
           uint8_t freq = frequency(static_cast<uint8_t>(i));
-          sum += freq;
           if (freq > max)
             max = freq;
         }
       }
       if (n <= pinmax)
       {
-        // pick the fewest and rarest (least frequently occurring) needles to search
+        // pick the fewest and rarest (less frequently occurring) needles to search
         if (max < freqlcp || (n < nlcp && max == freqlcp))
         {
           lcs_ = lcp_;
@@ -365,7 +367,6 @@ void Pattern::init(const char *options, const uint8_t *pred)
           freqlcs = freqlcp;
           lcp_ = static_cast<uint8_t>(k);
           nlcp = n;
-          freqsum = sum;
           freqlcp = max;
         }
         else if (n < nlcs ||
@@ -379,17 +380,17 @@ void Pattern::init(const char *options, const uint8_t *pred)
         }
       }
     }
-    // one position to pin: make lcp and lcs equal (compared and optimized later)
-    if (min == 1 || ((freqsum <= freqlcp || nlcs == 65535) && freqsum <= freqmax1))
+    // one position to pin: make lcp and lcs equal to 0 (only one position at 0)
+    if (min == 1 || nlcs == 65535)
     {
       nlcs = nlcp;
       lcs_ = lcp_;
     }
     // number of needles required
     uint16_t n = nlcp > nlcs ? nlcp : nlcs;
-    DBGLOG("min=%zu lcp=%hu(%hu) pin=%hu nlcp=%hu(%hu) freq=%hu(%hu) freqsum=%hu npy=%zu", min, lcp_, lcs_, n, nlcp, nlcs, freqlcp, freqlcs, freqsum, npy_);
+    DBGLOG("min=%zu lcp=%hu(%hu) pin=%hu nlcp=%hu(%hu) freq=%hu(%hu) npy=%zu", min, lcp_, lcs_, n, nlcp, nlcs, freqlcp, freqlcs, npy_);
     // determine if a needle-based search is worthwhile, below or meeting the thresholds
-    if (n <= pinmax && freqlcp <= freqmax2)
+    if (n <= pinmax && freqlcp <= freqmax)
     {
       // bridge the gap from 9 to 16 to handle 9 to 16 combined
       if (n > 8)
@@ -414,7 +415,7 @@ void Pattern::init(const char *options, const uint8_t *pred)
   }
   else if (len_ > 1)
   {
-    // Boyer-Moore preprocessing of the given string pattern pat of length len, generates bmd_ > 0 and bms_[] shifts
+    // produce lcp and lcs positions and Boyer-Moore bms_[] shifts when bmd_ > 0
     uint8_t n = static_cast<uint8_t>(len_); // okay to cast: actually never more than 255
     uint16_t i;
     for (i = 0; i < 256; ++i)
@@ -435,13 +436,14 @@ void Pattern::init(const char *options, const uint8_t *pred)
           lcs_ = lcp_;
           lcp_ = i;
         }
-        else if (lcpch != pch && frequency(lcsch) > freqpch)
+        else if (frequency(lcsch) > freqpch ||
+            (frequency(lcsch) == freqpch &&
+             abs(static_cast<int>(lcp_) - static_cast<int>(lcs_)) < abs(static_cast<int>(lcp_) - static_cast<int>(i))))
         {
           lcs_ = i;
         }
       }
     }
-    DBGLOG("len=%zu lcp=%hu(%hu)", len_, lcp_, lcs_);
     uint16_t j;
     for (i = n - 1, j = i; j > 0; --j)
       if (chr_[j - 1] == chr_[i])
@@ -471,7 +473,34 @@ void Pattern::init(const char *options, const uint8_t *pred)
 #endif
 #endif
     if (lcs_ < 0xffff)
-      bmd_ = 0; // do not use B-M
+    {
+      // do not use B-M
+      bmd_ = 0;
+      // spread lcp and lcs apart if lcp and lcs are adjacent (chars are possibly correlated)
+      if (len_ == 3 && (lcp_ == 1 || lcs_ == 1))
+      {
+        lcp_ = 0;
+        lcs_ = 2;
+      }
+      else if (len_ > 3 && (lcp_ + 1 == lcs_ || lcs_ + 1 == lcp_))
+      {
+        uint8_t freqlcs = 255;
+        for (i = 0; i < n; ++i)
+        {
+          if (i > lcp_ + 1 || i + 1 < lcp_)
+          {
+            uint8_t pch = static_cast<uint8_t>(chr_[i]);
+            uint8_t freqpch = frequency(pch);
+            if (freqlcs > freqpch)
+            {
+              lcs_ = i;
+              freqlcs = freqpch;
+            }
+          }
+        }
+      }
+    }
+    DBGLOG("len=%zu bmd=%zu lcp=%hu(%hu)", len_, bmd_, lcp_, lcs_);
   }
 }
 
@@ -539,7 +568,7 @@ void Pattern::init_options(const char *options)
         case 'z':
           for (const char *t = s += (s[1] == '='); *s != ';' && *s != '\0'; ++t)
           {
-            if (std::isspace(*t) || *t == ';' || *t == '\0')
+            if (std::isspace(static_cast<unsigned char>(*t)) || *t == ';' || *t == '\0')
             {
               if (t > s + 1)
                 opt_.z = std::string(s + 1, t - s - 1);
@@ -575,6 +604,7 @@ void Pattern::init_options(const char *options)
 void Pattern::parse(
     Positions& startpos,
     Follow&    followpos,
+    Lazypos&   lazypos,
     Mods       modifiers,
     Map&       lookahead)
 {
@@ -630,6 +660,7 @@ void Pattern::parse(
       loc = 0;
     }
   }
+  bol_ = at(loc) == '^';
   do
   {
     Location end = loc;
@@ -734,7 +765,8 @@ void Pattern::parse(
     }
     else
     {
-      Lazyset lazyset;
+      if (at(loc) != '^')
+        bol_ = false;
       parse2(
           true,
           loc,
@@ -743,34 +775,23 @@ void Pattern::parse(
           nullable,
           followpos,
           lazyidx,
-          lazyset,
+          lazypos,
           modifiers,
           lookahead[choice],
           iter);
       pos_insert(startpos, firstpos);
       if (nullable)
+        pos_add(startpos, Position(choice).accept(true));
+      if (lazypos.empty())
       {
-        if (lazyset.empty())
-        {
-          pos_add(startpos, Position(choice).accept(true));
-        }
-        else
-        {
-          for (Lazyset::const_iterator l = lazyset.begin(); l != lazyset.end(); ++l)
-            pos_add(startpos, Position(choice).accept(true).lazy(*l));
-        }
-      }
-      for (Positions::const_iterator p = lastpos.begin(); p != lastpos.end(); ++p)
-      {
-        if (lazyset.empty())
-        {
+        for (Positions::const_iterator p = lastpos.begin(); p != lastpos.end(); ++p)
           pos_add(followpos[p->pos()], Position(choice).accept(true));
-        }
-        else
-        {
-          for (Lazyset::const_iterator l = lazyset.begin(); l != lazyset.end(); ++l)
-            pos_add(followpos[p->pos()], Position(choice).accept(true).lazy(*l));
-        }
+      }
+      else
+      {
+        for (Positions::const_iterator p = lastpos.begin(); p != lastpos.end(); ++p)
+          for (Lazypos::const_iterator l = lazypos.begin(); l != lazypos.end(); ++l)
+            pos_add(followpos[p->pos()], Position(choice).accept(true).lazy(l->lazy()));
       }
     }
     if (++choice == 0)
@@ -815,7 +836,7 @@ void Pattern::parse1(
     bool&      nullable,
     Follow&    followpos,
     Lazy&      lazyidx,
-    Lazyset&   lazyset,
+    Lazypos&   lazypos,
     Mods       modifiers,
     Locations& lookahead,
     Iter&      iter)
@@ -829,14 +850,14 @@ void Pattern::parse1(
       nullable,
       followpos,
       lazyidx,
-      lazyset,
+      lazypos,
       modifiers,
       lookahead,
       iter);
   Positions firstpos1;
   Positions lastpos1;
   bool      nullable1;
-  Lazyset   lazyset1;
+  Lazypos   lazypos1;
   Iter      iter1;
   while (at(loc) == '|')
   {
@@ -849,13 +870,13 @@ void Pattern::parse1(
         nullable1,
         followpos,
         lazyidx,
-        lazyset1,
+        lazypos1,
         modifiers,
         lookahead,
         iter1);
     pos_insert(firstpos, firstpos1);
     pos_insert(lastpos, lastpos1);
-    lazy_insert(lazyset, lazyset1);
+    lazy_insert(lazypos, lazypos1);
     if (nullable1)
       nullable = true;
     if (iter1 > iter)
@@ -872,7 +893,7 @@ void Pattern::parse2(
     bool&      nullable,
     Follow&    followpos,
     Lazy&      lazyidx,
-    Lazyset&   lazyset,
+    Lazypos&   lazypos,
     Mods       modifiers,
     Locations& lookahead,
     Iter&      iter)
@@ -890,13 +911,13 @@ void Pattern::parse2(
       if (at(loc) == '^')
       {
         pos_add(a_pos, Position(loc++));
-        begin = false; // CHECKED algorithmic options: 7/29 but does not allow ^ as a pattern
+        begin = false;
       }
       else if (escapes_at(loc, "ABb<>"))
       {
         pos_add(a_pos, Position(loc));
         loc += 2;
-        begin = false; // CHECKED algorithmic options: 7/29 but does not allow \b as a pattern
+        begin = false;
       }
       else
       {
@@ -916,14 +937,14 @@ void Pattern::parse2(
         nullable,
         followpos,
         lazyidx,
-        lazyset,
+        lazypos,
         modifiers,
         lookahead,
         iter);
     Positions firstpos1;
     Positions lastpos1;
     bool      nullable1;
-    Lazyset   lazyset1;
+    Lazypos   lazypos1;
     Iter      iter1;
     while ((c = at(loc)) != '\0' && c != '|' && c != ')')
     {
@@ -935,19 +956,10 @@ void Pattern::parse2(
           nullable1,
           followpos,
           lazyidx,
-          lazyset1,
+          lazypos1,
           modifiers,
           lookahead,
           iter1);
-      if (!lazyset.empty()) // CHECKED this is an extra rule for + only and (may) not be needed for *
-      {
-        // CHECKED algorithmic options: lazy(lazyset, firstpos1); does not work for (a|b)*?a*b+, below works
-        Positions firstpos2;
-        lazy(lazyset, firstpos1, firstpos2);
-        pos_insert(firstpos1, firstpos2);
-        // if (lazyset1.empty())
-        // greedy(firstpos1); // CHECKED algorithmic options: 8/1 works except fails for ((a|b)*?b){2} and (a|b)??(a|b)??aa
-      }
       if (nullable)
         pos_insert(firstpos, firstpos1);
       for (Positions::const_iterator p = lastpos.begin(); p != lastpos.end(); ++p)
@@ -955,26 +967,34 @@ void Pattern::parse2(
       if (nullable1)
       {
         pos_insert(lastpos, lastpos1);
-        lazy_insert(lazyset, lazyset1); // CHECKED 10/21
       }
       else
       {
         lastpos.swap(lastpos1);
-        lazyset.swap(lazyset1); // CHECKED 10/21
         nullable = false;
       }
-      // CHECKED 10/21 lazy_insert(lazyset, lazyset1);
+      lazy_insert(lazypos, lazypos1);
       if (iter1 > iter)
         iter = iter1;
     }
   }
-  for (Positions::const_iterator p = a_pos.begin(); p != a_pos.end(); ++p)
+  for (Positions::iterator p = a_pos.begin(); p != a_pos.end(); ++p)
   {
     for (Positions::const_iterator k = lastpos.begin(); k != lastpos.end(); ++k)
       if (at(k->loc()) == ')' && lookahead.find(k->loc()) != lookahead.end())
         pos_add(followpos[p->pos()], *k);
-    for (Positions::const_iterator k = lastpos.begin(); k != lastpos.end(); ++k)
-      pos_add(followpos[k->pos()], p->anchor(!nullable || k->pos() != p->pos()));
+    if (lazypos.empty())
+    {
+      for (Positions::const_iterator k = lastpos.begin(); k != lastpos.end(); ++k)
+        pos_add(followpos[k->pos()], p->anchor(!nullable || k->pos() != p->pos()));
+    }
+    else
+    {
+      // make the starting anchors at positions a_pos lazy
+      for (Lazypos::const_iterator l = lazypos.begin(); l != lazypos.end(); ++l)
+        for (Positions::const_iterator k = lastpos.begin(); k != lastpos.end(); ++k)
+          pos_add(followpos[k->pos()], p->lazy(l->lazy()).anchor(!nullable || k->pos() != p->pos()));
+    }
     lastpos.clear();
     pos_add(lastpos, *p);
     if (nullable || firstpos.empty())
@@ -994,7 +1014,7 @@ void Pattern::parse3(
     bool&      nullable,
     Follow&    followpos,
     Lazy&      lazyidx,
-    Lazyset&   lazyset,
+    Lazypos&   lazypos,
     Mods       modifiers,
     Locations& lookahead,
     Iter&      iter)
@@ -1009,7 +1029,7 @@ void Pattern::parse3(
       nullable,
       followpos,
       lazyidx,
-      lazyset,
+      lazypos,
       modifiers,
       lookahead,
       iter);
@@ -1027,30 +1047,17 @@ void Pattern::parse3(
       {
         if (++lazyidx == 0)
           error(regex_error::exceeds_limits, loc); // overflow: exceeds max 255 lazy quantifiers
-        lazy_add(lazyset, lazyidx);
-        if (nullable)
-          lazy(lazyset, firstpos);
+        lazy_add(lazypos, lazyidx, loc);
+        lazy(lazypos, firstpos);
         ++loc;
       }
-      else
+      else if (c != '?' && !lazypos.empty())
       {
-        // CHECKED algorithmic options: 7/30 if (!nullable)
-        // CHECKED algorithmic options: 7/30   lazyset.clear();
         greedy(firstpos);
       }
-      if (c == '+' && !nullable && !lazyset.empty())
-      {
-        Positions firstpos1;
-        lazy(lazyset, firstpos, firstpos1);
-        for (Positions::const_iterator p = lastpos.begin(); p != lastpos.end(); ++p)
-          pos_insert(followpos[p->pos()], firstpos1);
-        pos_insert(firstpos, firstpos1);
-      }
-      else if (c == '*' || c == '+')
-      {
+      if (c != '?')
         for (Positions::const_iterator p = lastpos.begin(); p != lastpos.end(); ++p)
           pos_insert(followpos[p->pos()], firstpos);
-      }
     }
     else if (c == '{') // {n,m} repeat min n times to max m
     {
@@ -1087,35 +1094,14 @@ void Pattern::parse3(
         {
           if (++lazyidx == 0)
             error(regex_error::exceeds_limits, loc); // overflow: exceeds max 255 lazy quantifiers
-          lazy_add(lazyset, lazyidx);
-          if (nullable)
-            lazy(lazyset, firstpos);
-          /* CHECKED algorithmic options: 8/1 else
-             {
-             lazy(lazyset, firstpos, firstpos1);
-             pos_insert(firstpos, firstpos1);
-             pfirstpos = &firstpos1;
-             } */
+          lazy_add(lazypos, lazyidx, loc);
+          lazy(lazypos, firstpos);
           ++loc;
-        }
-        else
-        {
-          // CHECKED algorithmic options 7/30 if (!nullable)
-          // CHECKED algorithmic options 7/30   lazyset.clear();
-          if (n <= m && lazyset.empty())
-            greedy(firstpos);
-        }
-        // CHECKED added pfirstpos to point to updated firstpos with lazy quants
-        Positions firstpos1, *pfirstpos = &firstpos;
-        if (!nullable && !lazyset.empty()) // CHECKED algorithmic options 8/1 added to make ((a|b)*?b){2} work
-        {
-          lazy(lazyset, firstpos, firstpos1);
-          pfirstpos = &firstpos1;
         }
         if (nullable && unlimited) // {0,} == *
         {
           for (Positions::const_iterator p = lastpos.begin(); p != lastpos.end(); ++p)
-            pos_insert(followpos[p->pos()], *pfirstpos);
+            pos_insert(followpos[p->pos()], firstpos);
         }
         else if (m > 0)
         {
@@ -1133,16 +1119,17 @@ void Pattern::parse3(
           // add m-1 times virtual concatenation (by indexed positions k.i)
           for (Iter i = 0; i < m - 1; ++i)
             for (Positions::const_iterator k = lastpos.begin(); k != lastpos.end(); ++k)
-              for (Positions::const_iterator j = pfirstpos->begin(); j != pfirstpos->end(); ++j)
+              for (Positions::const_iterator j = firstpos.begin(); j != firstpos.end(); ++j)
                 pos_add(followpos[k->pos().iter(iter * i)], j->iter(iter * i + iter));
           if (unlimited)
             for (Positions::const_iterator k = lastpos.begin(); k != lastpos.end(); ++k)
-              for (Positions::const_iterator j = pfirstpos->begin(); j != pfirstpos->end(); ++j)
+              for (Positions::const_iterator j = firstpos.begin(); j != firstpos.end(); ++j)
                 pos_add(followpos[k->pos().iter(iter * (m - 1))], j->iter(iter * (m - 1)));
           if (nullable1)
           {
             // extend firstpos when sub-regex is nullable
-            Positions firstpos1 = *pfirstpos;
+            Positions firstpos1 = firstpos;
+            firstpos.reserve(m * firstpos1.size());
             for (Iter i = 1; i <= m - 1; ++i)
               for (Positions::const_iterator k = firstpos1.begin(); k != firstpos1.end(); ++k)
                 pos_add(firstpos, k->iter(iter * i));
@@ -1159,7 +1146,7 @@ void Pattern::parse3(
         {
           firstpos.clear();
           lastpos.clear();
-          lazyset.clear();
+          lazypos.clear();
         }
       }
       else if (at(loc) == '\0')
@@ -1188,7 +1175,7 @@ void Pattern::parse4(
     bool&      nullable,
     Follow&    followpos,
     Lazy&      lazyidx,
-    Lazyset&   lazyset,
+    Lazypos&   lazypos,
     Mods       modifiers,
     Locations& lookahead,
     Iter&      iter)
@@ -1197,7 +1184,7 @@ void Pattern::parse4(
   firstpos.clear();
   lastpos.clear();
   nullable = true;
-  lazyset.clear();
+  lazypos.clear();
   iter = 1;
   Char c = at(loc);
   if (c == '(')
@@ -1224,7 +1211,7 @@ void Pattern::parse4(
             nullable,
             followpos,
             lazyidx,
-            lazyset,
+            lazypos,
             modifiers,
             lookahead,
             iter);
@@ -1242,7 +1229,7 @@ void Pattern::parse4(
             nullable,
             followpos,
             lazyidx,
-            lazyset,
+            lazypos,
             modifiers,
             lookahead,
             iter);
@@ -1271,7 +1258,7 @@ void Pattern::parse4(
             nullable,
             followpos,
             lazyidx,
-            lazyset,
+            lazypos,
             modifiers,
             lookahead,
             iter);
@@ -1305,7 +1292,7 @@ void Pattern::parse4(
             nullable,
             followpos,
             lazyidx,
-            lazyset,
+            lazypos,
             modifiers,
             lookahead,
             iter);
@@ -1346,7 +1333,7 @@ void Pattern::parse4(
           nullable,
           followpos,
           lazyidx,
-          lazyset,
+          lazypos,
           modifiers,
           lookahead,
           iter);
@@ -1586,10 +1573,11 @@ Pattern::Char Pattern::parse_esc(Location& loc, Chars *chars) const
 }
 
 void Pattern::compile(
-    DFA::State *start,
-    Follow&     followpos,
-    const Mods  modifiers,
-    const Map&  lookahead)
+    DFA::State    *start,
+    Follow&        followpos,
+    const Lazypos& lazypos,
+    const Mods     modifiers,
+    const Map&     lookahead)
 {
   DBGLOG("BEGIN compile()");
   // init timers
@@ -1597,7 +1585,7 @@ void Pattern::compile(
   timer_start(vt);
   // construct the DFA
   acc_.resize(end_.size(), false);
-  trim_lazy(start);
+  trim_lazy(start, lazypos);
   // hash table with 64K pointer entries uint16_t indexed
   DFA::State **table = new DFA::State*[65536];
   for (int i = 0; i < 65536; ++i)
@@ -1617,6 +1605,7 @@ void Pattern::compile(
     compile_transition(
         state,
         followpos,
+        lazypos,
         modifiers,
         lookahead,
         moves);
@@ -2110,43 +2099,29 @@ void Pattern::compile(
 }
 
 void Pattern::lazy(
-    const Lazyset& lazyset,
+    const Lazypos& lazypos,
     Positions&     pos) const
 {
-  if (!lazyset.empty())
-  {
-    Positions pos1;
-    lazy(lazyset, pos, pos1);
-    pos.swap(pos1);
-  }
+  for (Positions::iterator p = pos.begin(); p != pos.end(); ++p)
+    for (Lazypos::const_iterator l = lazypos.begin(); l != lazypos.end(); ++l)
+      *p = p->lazy(l->lazy());
 }
 
 void Pattern::lazy(
-    const Lazyset&   lazyset,
+    const Lazypos&   lazypos,
     const Positions& pos,
     Positions&       pos1) const
 {
+  pos1.reserve(lazypos.size() * pos.size());
   for (Positions::const_iterator p = pos.begin(); p != pos.end(); ++p)
-    for (Lazyset::const_iterator l = lazyset.begin(); l != lazyset.end(); ++l)
-      // pos1.insert(p->lazy() ? *p : p->lazy(*l)); // CHECKED algorithmic options: only if p is not already lazy??
-      pos_add(pos1, p->lazy(*l)); // overrides lazyness even when p is already lazy
+    for (Lazypos::const_iterator l = lazypos.begin(); l != lazypos.end(); ++l)
+      pos_add(pos1, p->lazy(l->lazy()));
 }
 
 void Pattern::greedy(Positions& pos) const
 {
-#ifdef WITH_VECTOR
-  // in-place
   for (Positions::iterator p = pos.begin(); p != pos.end(); ++p)
-    if (!p->lazy())
-      *p = p->greedy(true); // CHECKED algorithmic options: 7/29 guard added: p->lazy() ? *p : p->greedy(true)
-    // CHECKED 10/21 pos_add(pos1, p->lazy(0).greedy(true));
-#else
-  Positions pos1;
-  for (Positions::const_iterator p = pos.begin(); p != pos.end(); ++p)
-    pos_add(pos1, p->lazy() ? *p : p->greedy(true)); // CHECKED algorithmic options: 7/29 guard added: p->lazy() ? *p : p->greedy(true)
-    // CHECKED 10/21 pos1.insert(p->lazy(0).greedy(true));
-  pos.swap(pos1);
-#endif
+    *p = p->lazy(0);
 }
 
 void Pattern::trim_anchors(Positions& follow, const Position p) const
@@ -2197,7 +2172,7 @@ void Pattern::trim_anchors(Positions& follow, const Position p) const
 #endif
 }
 
-void Pattern::trim_lazy(Positions *pos) const
+void Pattern::trim_lazy(Positions *pos, const Lazypos& lazypos) const
 {
 #ifdef DEBUG
   DBGLOG("BEGIN trim_lazy({");
@@ -2205,102 +2180,54 @@ void Pattern::trim_lazy(Positions *pos) const
     DBGLOGPOS(*q);
   DBGLOGA(" })");
 #endif
-#ifdef WITH_VECTOR
-  // sort the positions and remove duplicates
-  std::sort(pos->begin(), pos->end());
-  pos->erase(unique(pos->begin(), pos->end()), pos->end());
-  // note: positions are sorted w/o duplicates, may no longer be strictly sorted afterwards
-  Positions::iterator p = pos->begin();
-  while (p != pos->end())
+  for (Positions::iterator p = pos->begin(); p != pos->end(); ++p)
   {
     Lazy l = p->lazy();
-    if (l && (p->accept() || p->anchor()))
+    // if lazy accept state, then remove matching lazy positions to cut lazy edges
+    if (l > 0 && (p->accept() || p->anchor()))
     {
       *p = p->lazy(0);
-      p = pos->begin();
-      while (p != pos->end())
+      // remove lazy positions matching lazy index l
+      Positions::iterator q = pos->begin();
+      Positions::iterator r = q;
+      size_t i = 0;
+      while (q != pos->end())
       {
-        if (p->lazy() == l)
-          p = pos->erase(p);
-        else
-          ++p;
-      }
-      p = pos->begin();
-      continue;
-    }
-    ++p;
-  }
-  for (Positions::reverse_iterator q = pos->rbegin(); q != pos->rend() && q->lazy(); ++q)
-    if (q->greedy())
-      *q = q->lazy(0);
-#else
-  Positions::reverse_iterator p = pos->rbegin();
-  while (p != pos->rend() && p->lazy())
-  {
-    Lazy l = p->lazy();
-    if (p->accept() || p->anchor()) // CHECKED algorithmic options: 7/28 added p->anchor()
-    {
-      pos->insert(p->lazy(0)); // make lazy accept/anchor a non-lazy accept/anchor
-      pos->erase(--p.base());
-      while (p != pos->rend() && !p->accept() && p->lazy() == l)
-      {
-#if 0 // CHECKED algorithmic options: set to 1 to turn lazy trimming off
-        ++p;
-#else
-        pos->erase(--p.base());
-#endif
-      }
-    }
-    else
-    {
-#if 0 // CHECKED algorithmic options: 7/31
-      if (p->greedy())
-      {
-        pos->insert(p->lazy(0).greedy(false));
-        pos->erase(--p.base());
-      }
-      else
-      {
-        break; // ++p;
-      }
-#else
-      if (!p->greedy()) // stop here, greedy bit is 0 from here on
-        break;
-      pos->insert(p->lazy(0));
-      pos->erase(--p.base()); // CHECKED 10/21 ++p;
-#endif
-    }
-  }
-#if 0 // CHECKED algorithmic options: 7/31 but results in more states
-  while (p != pos->rend() && p->greedy())
-  {
-    pos->insert(p->greedy(false));
-    pos->erase(--p.base());
-  }
-#endif
-  // trim accept positions keeping the first (smallest) only
-  Positions::iterator q = pos->begin();
-  bool keep = true;
-  while (q != pos->end())
-  {
-    if (q->accept() && !q->negate())
-    {
-      if (keep)
-      {
-        keep = false;
+        if (q->lazy() != l)
+        {
+          if (q != r)
+            *r = *q;
+          ++r;
+          if (q < p)
+            ++i;
+        }
         ++q;
       }
-      else
+      // if anything was removed, then update the position vector and reassign iterator p
+      if (r != pos->end())
       {
-        q = pos->erase(q);
+        pos->erase(r, pos->end());
+        p = pos->begin() + i;
       }
     }
-    else
-    {
-      ++q;
-    }
   }
-#endif
+  // sort the positions and remove duplicates to make the state unique and comparable
+  std::sort(pos->begin(), pos->end());
+  pos->erase(unique(pos->begin(), pos->end()), pos->end());
+  // if all positions are lazy with the same lazy index, then make the after positions non-lazy
+  if (!pos->empty() && pos->begin()->lazy())
+  {
+    Location max = 0;
+    for (Lazypos::const_iterator l = lazypos.begin(); l != lazypos.end(); ++l)
+      for (Positions::const_iterator p = pos->begin(); p != pos->end(); ++p)
+        if (p->lazy() == l->lazy())
+          if (max < l->loc())
+            max = l->loc();
+    if (max > 0)
+      for (Positions::iterator p = pos->begin(); p != pos->end(); ++p)
+        if (p->loc() > max)
+          *p = p->lazy(0);
+  }
 #ifdef DEBUG
   DBGLOG("END trim_lazy({");
   for (Positions::const_iterator q = pos->begin(); q != pos->end(); ++q)
@@ -2310,11 +2237,12 @@ void Pattern::trim_lazy(Positions *pos) const
 }
 
 void Pattern::compile_transition(
-    DFA::State *state,
-    Follow&     followpos,
-    const Mods  modifiers,
-    const Map&  lookahead,
-    Moves&      moves) const
+    DFA::State    *state,
+    Follow&        followpos,
+    const Lazypos& lazypos,
+    const Mods     modifiers,
+    const Map&     lookahead,
+    Moves&         moves) const
 {
   DBGLOG("BEGIN compile_transition()");
   Positions::const_iterator end = state->end();
@@ -2393,32 +2321,20 @@ void Pattern::compile_transition(
           {
             Positions::iterator b = i->second.begin();
             if (b != i->second.end() && !b->negate())
-            {
-#ifdef WITH_VECTOR
-              // in-place
               for (Positions::iterator p = b; p != i->second.end(); ++p)
                 *p = p->negate(true);
-#else
-              Positions to;
-              for (Positions::const_iterator p = b; p != i->second.end(); ++p)
-                pos_add(to, p->negate(true));
-              i->second.swap(to);
-#endif
-            }
           }
-          if (k->lazy())
+          Lazy l = k->lazy();
+          if (l)
           {
-#if 1 // CHECKED algorithmic options: 7/31 this optimization works fine when trim_lazy adds non-lazy greedy state, but may increase the total number of states:
-            if (k->greedy())
-              continue;
-#endif
+            // propagage lazy property along the path
             Follow::iterator j = followpos.find(*k);
             if (j == followpos.end())
             {
-              // followpos is not defined for lazy pos yet, so add lazy followpos (memoization)
               j = followpos.insert(std::pair<Position,Positions>(*k, Positions())).first;
-              for (Positions::const_iterator p = i->second.begin(); p != i->second.end(); ++p)
-                pos_add(j->second, /* p->lazy() || CHECKED algorithmic options: 7/31 */ p->ticked() ? *p : /* CHECKED algorithmic options: 7/31 adds too many states p->greedy() ? p->lazy(0).greedy(false) : */ p->lazy(k->lazy())); // CHECKED algorithmic options: 7/18 ticked() preserves lookahead tail at '/' and ')'
+              j->second.reserve(i->second.size());
+              for (Positions::iterator p = i->second.begin(); p != i->second.end(); ++p)
+                pos_add(j->second, p->ticked() ? *p : p->lazy(l));
 #ifdef DEBUG
               DBGLOGN("lazy followpos(");
               DBGLOGPOS(*k);
@@ -2541,7 +2457,7 @@ void Pattern::compile_transition(
   Moves::const_iterator e = moves.end();
   while (i != e)
   {
-    trim_lazy(&i->second);
+    trim_lazy(&i->second, lazypos);
     if (i->second.empty())
       moves.erase(i++);
     else
@@ -2569,7 +2485,6 @@ void Pattern::transition(
       ++i;
     }
   }
-#ifdef WITH_VECTOR
   Chars common;
   for (i = moves.begin(); i != end; ++i)
   {
@@ -2593,36 +2508,6 @@ void Pattern::transition(
         return;
     }
   }
-#else
-  for (i = moves.begin(); i != end; ++i)
-  {
-    if (chars.intersects(i->first))
-    {
-      if (is_subset(follow, i->second))
-      {
-        chars -= i->first;
-      }
-      else
-      {
-        if (chars.contains(i->first))
-        {
-          chars -= i->first;
-          pos_insert(i->second, follow);
-        }
-        else
-        {
-          Move back(chars & i->first, i->second);
-          pos_insert(back.second, follow);
-          chars -= back.first;
-          i->first -= back.first;
-          moves.push_back(back);
-        }
-      }
-      if (!chars.any())
-        return;
-    }
-  }
-#endif
   if (chars.any())
     moves.push_back(Move(chars, follow));
 }
@@ -3110,8 +2995,8 @@ void Pattern::gencode_dfa(const DFA::State *start) const
       ::fprintf(file,
           "void reflex_code_%s(reflex::Matcher& m)\n"
           "{\n"
-          "  int c0 = 0, c1 = 0;\n"
-          "  m.FSM_INIT(c1);\n", opt_.n.empty() ? "FSM" : opt_.n.c_str());
+          "  int c = 0;\n"
+          "  m.FSM_INIT(c);\n", opt_.n.empty() ? "FSM" : opt_.n.c_str());
       for (const DFA::State *state = start; state != NULL; state = state->next)
       {
         ::fprintf(file, "\nS%u:\n", state->index);
@@ -3127,8 +3012,7 @@ void Pattern::gencode_dfa(const DFA::State *start) const
           ::fprintf(file, "  m.FSM_HEAD(%u);\n", *i);
         if (state->edges.rbegin() != state->edges.rend() && state->edges.rbegin()->first == META_DED)
           ::fprintf(file, "  if (m.FSM_DENT()) goto S%u;\n", state->edges.rbegin()->second.second->index);
-        bool peek = false; // if we need to read a character into c1
-        bool prev = false; // if we need to keep the previous character in c0
+        bool peek = false; // if we need to read a character into c
         for (DFA::State::Edges::const_reverse_iterator i = state->edges.rbegin(); i != state->edges.rend(); ++i)
         {
 #if WITH_COMPACT_DFA == -1
@@ -3142,13 +3026,12 @@ void Pattern::gencode_dfa(const DFA::State *start) const
           {
             do
             {
-              if (lo == META_EOB || lo == META_EOL)
+              if (lo == META_EOB || lo == META_EOL || lo == META_EWE || lo == META_BWE || lo == META_NWE || lo == META_WBE)
+              {
                 peek = true;
-              else if (lo == META_EWE || lo == META_BWE || lo == META_NWE || lo == META_WBE)
-                prev = peek = true;
-              if (prev && peek)
                 break;
-              check_dfa_closure(i->second.second, 1, peek, prev);
+              }
+              check_dfa_closure(i->second.second, 1, peek);
             } while (++lo <= hi);
           }
           else
@@ -3174,10 +3057,7 @@ void Pattern::gencode_dfa(const DFA::State *start) const
             target_index = i->second.second->index;
           if (read)
           {
-            if (prev)
-              ::fprintf(file, "  c0 = c1, c1 = m.FSM_CHAR();\n");
-            else
-              ::fprintf(file, "  c1 = m.FSM_CHAR();\n");
+            ::fprintf(file, "  c = m.FSM_CHAR();\n");
             read = false;
           }
           if (is_meta(lo))
@@ -3188,14 +3068,6 @@ void Pattern::gencode_dfa(const DFA::State *start) const
               {
                 case META_EOB:
                 case META_EOL:
-                  ::fprintf(file, "  ");
-                  if (elif)
-                    ::fprintf(file, "else ");
-                  ::fprintf(file, "if (m.FSM_META_%s(c1)) {\n", meta_label[lo - META_MIN]);
-                  gencode_dfa_closure(file, i->second.second, 2, peek);
-                  ::fprintf(file, "  }\n");
-                  elif = true;
-                  break;
                 case META_EWE:
                 case META_BWE:
                 case META_NWE:
@@ -3203,7 +3075,7 @@ void Pattern::gencode_dfa(const DFA::State *start) const
                   ::fprintf(file, "  ");
                   if (elif)
                     ::fprintf(file, "else ");
-                  ::fprintf(file, "if (m.FSM_META_%s(c0, c1)) {\n", meta_label[lo - META_MIN]);
+                  ::fprintf(file, "if (m.FSM_META_%s(c)) {\n", meta_label[lo - META_MIN]);
                   gencode_dfa_closure(file, i->second.second, 2, peek);
                   ::fprintf(file, "  }\n");
                   elif = true;
@@ -3226,7 +3098,7 @@ void Pattern::gencode_dfa(const DFA::State *start) const
               break;
             if (lo == hi)
             {
-              ::fprintf(file, "  if (c1 == ");
+              ::fprintf(file, "  if (c == ");
               print_char(file, lo);
               ::fprintf(file, ")");
             }
@@ -3234,20 +3106,20 @@ void Pattern::gencode_dfa(const DFA::State *start) const
             {
               ::fprintf(file, "  if (");
               print_char(file, lo);
-              ::fprintf(file, " <= c1)");
+              ::fprintf(file, " <= c)");
             }
             else
             {
               ::fprintf(file, "  if (");
               print_char(file, lo);
-              ::fprintf(file, " <= c1 && c1 <= ");
+              ::fprintf(file, " <= c && c <= ");
               print_char(file, hi);
               ::fprintf(file, ")");
             }
             if (target_index == Const::IMAX)
             {
               if (peek)
-                ::fprintf(file, " return m.FSM_HALT(c1);\n");
+                ::fprintf(file, " return m.FSM_HALT(c);\n");
               else
                 ::fprintf(file, " return m.FSM_HALT();\n");
             }
@@ -3266,10 +3138,7 @@ void Pattern::gencode_dfa(const DFA::State *start) const
           {
             if (read)
             {
-              if (prev)
-                ::fprintf(file, "  c0 = c1, c1 = m.FSM_CHAR();\n");
-              else
-                ::fprintf(file, "  c1 = m.FSM_CHAR();\n");
+              ::fprintf(file, "  c = m.FSM_CHAR();\n");
               read = false;
             }
             do
@@ -3278,14 +3147,6 @@ void Pattern::gencode_dfa(const DFA::State *start) const
               {
                 case META_EOB:
                 case META_EOL:
-                  ::fprintf(file, "  ");
-                  if (elif)
-                    ::fprintf(file, "else ");
-                  ::fprintf(file, "if (m.FSM_META_%s(c1)) {\n", meta_label[lo - META_MIN]);
-                  gencode_dfa_closure(file, i->second.second, 2, peek);
-                  ::fprintf(file, "  }\n");
-                  elif = true;
-                  break;
                 case META_EWE:
                 case META_BWE:
                 case META_NWE:
@@ -3293,7 +3154,7 @@ void Pattern::gencode_dfa(const DFA::State *start) const
                   ::fprintf(file, "  ");
                   if (elif)
                     ::fprintf(file, "else ");
-                  ::fprintf(file, "if (m.FSM_META_%s(c0, c1)) {\n", meta_label[lo - META_MIN]);
+                  ::fprintf(file, "if (m.FSM_META_%s(c)) {\n", meta_label[lo - META_MIN]);
                   gencode_dfa_closure(file, i->second.second, 2, peek);
                   ::fprintf(file, "  }\n");
                   elif = true;
@@ -3319,10 +3180,7 @@ void Pattern::gencode_dfa(const DFA::State *start) const
             target_index = i->second.second->index;
           if (read)
           {
-            if (prev)
-              ::fprintf(file, "  c0 = c1, c1 = m.FSM_CHAR();\n");
-            else
-              ::fprintf(file, "  c1 = m.FSM_CHAR();\n");
+            ::fprintf(file, "  c = m.FSM_CHAR();\n");
             read = false;
           }
           if (!is_meta(lo))
@@ -3332,7 +3190,7 @@ void Pattern::gencode_dfa(const DFA::State *start) const
               break;
             if (lo == hi)
             {
-              ::fprintf(file, "  if (c1 == ");
+              ::fprintf(file, "  if (c == ");
               print_char(file, lo);
               ::fprintf(file, ")");
             }
@@ -3340,20 +3198,20 @@ void Pattern::gencode_dfa(const DFA::State *start) const
             {
               ::fprintf(file, "  if (");
               print_char(file, lo);
-              ::fprintf(file, " <= c1)");
+              ::fprintf(file, " <= c)");
             }
             else
             {
               ::fprintf(file, "  if (");
               print_char(file, lo);
-              ::fprintf(file, " <= c1 && c1 <= ");
+              ::fprintf(file, " <= c && c <= ");
               print_char(file, hi);
               ::fprintf(file, ")");
             }
             if (target_index == Const::IMAX)
             {
               if (peek)
-                ::fprintf(file, " return m.FSM_HALT(c1);\n");
+                ::fprintf(file, " return m.FSM_HALT(c);\n");
               else
                 ::fprintf(file, " return m.FSM_HALT();\n");
             }
@@ -3365,7 +3223,7 @@ void Pattern::gencode_dfa(const DFA::State *start) const
         }
 #endif
         if (peek)
-          ::fprintf(file, "  return m.FSM_HALT(c1);\n");
+          ::fprintf(file, "  return m.FSM_HALT(c);\n");
         else
           ::fprintf(file, "  return m.FSM_HALT();\n");
       }
@@ -3383,7 +3241,7 @@ void Pattern::gencode_dfa(const DFA::State *start) const
 }
 
 #ifndef WITH_NO_CODEGEN
-void Pattern::check_dfa_closure(const DFA::State *state, int nest, bool& peek, bool& prev) const
+void Pattern::check_dfa_closure(const DFA::State *state, int nest, bool& peek) const
 {
   if (nest > 5)
     return;
@@ -3400,13 +3258,12 @@ void Pattern::check_dfa_closure(const DFA::State *state, int nest, bool& peek, b
     {
       do
       {
-        if (lo == META_EOB || lo == META_EOL)
+        if (lo == META_EOB || lo == META_EOL || lo == META_EWE || lo == META_BWE || lo == META_NWE || lo == META_WBE)
+        {
           peek = true;
-        else if (lo == META_EWE || lo == META_BWE || lo == META_NWE || lo == META_WBE)
-          prev = peek = true;
-        if (prev && peek)
           break;
-        check_dfa_closure(i->second.second, nest + 1, peek, prev);
+        }
+        check_dfa_closure(i->second.second, nest + 1, peek);
       } while (++lo <= hi);
     }
   }
@@ -3420,14 +3277,14 @@ void Pattern::gencode_dfa_closure(FILE *file, const DFA::State *state, int nest,
   if (state->redo)
   {
     if (peek)
-      ::fprintf(file, "%*sm.FSM_REDO(c1);\n", 2*nest, "");
+      ::fprintf(file, "%*sm.FSM_REDO(c);\n", 2*nest, "");
     else
       ::fprintf(file, "%*sm.FSM_REDO();\n", 2*nest, "");
   }
   else if (state->accept > 0)
   {
     if (peek)
-      ::fprintf(file, "%*sm.FSM_TAKE(%u, c1);\n", 2*nest, "", state->accept);
+      ::fprintf(file, "%*sm.FSM_TAKE(%u, c);\n", 2*nest, "", state->accept);
     else
       ::fprintf(file, "%*sm.FSM_TAKE(%u);\n", 2*nest, "", state->accept);
   }
@@ -3452,14 +3309,6 @@ void Pattern::gencode_dfa_closure(FILE *file, const DFA::State *state, int nest,
         {
           case META_EOB:
           case META_EOL:
-            ::fprintf(file, "%*s", 2*nest, "");
-            if (elif)
-              ::fprintf(file, "else ");
-            ::fprintf(file, "if (m.FSM_META_%s(c1)) {\n", meta_label[lo - META_MIN]);
-            gencode_dfa_closure(file, i->second.second, nest + 1, peek);
-            ::fprintf(file, "%*s}\n", 2*nest, "");
-            elif = true;
-            break;
           case META_EWE:
           case META_BWE:
           case META_NWE:
@@ -3467,7 +3316,7 @@ void Pattern::gencode_dfa_closure(FILE *file, const DFA::State *state, int nest,
             ::fprintf(file, "%*s", 2*nest, "");
             if (elif)
               ::fprintf(file, "else ");
-            ::fprintf(file, "if (m.FSM_META_%s(c0, c1)) {\n", meta_label[lo - META_MIN]);
+            ::fprintf(file, "if (m.FSM_META_%s(c)) {\n", meta_label[lo - META_MIN]);
             gencode_dfa_closure(file, i->second.second, nest + 1, peek);
             ::fprintf(file, "%*s}\n", 2*nest, "");
             elif = true;
@@ -3495,7 +3344,7 @@ void Pattern::gencode_dfa_closure(FILE *file, const DFA::State *state, int nest,
       ::fprintf(file, "%*s", 2*nest, "");
       if (lo == hi)
       {
-        ::fprintf(file, "if (c1 == ");
+        ::fprintf(file, "if (c == ");
         print_char(file, lo);
         ::fprintf(file, ")");
       }
@@ -3503,20 +3352,20 @@ void Pattern::gencode_dfa_closure(FILE *file, const DFA::State *state, int nest,
       {
         ::fprintf(file, "if (");
         print_char(file, lo);
-        ::fprintf(file, " <= c1)");
+        ::fprintf(file, " <= c)");
       }
       else
       {
         ::fprintf(file, "if (");
         print_char(file, lo);
-        ::fprintf(file, " <= c1 && c1 <= ");
+        ::fprintf(file, " <= c && c <= ");
         print_char(file, hi);
         ::fprintf(file, ")");
       }
       if (target_index == Const::IMAX)
       {
         if (peek)
-          ::fprintf(file, " return m.FSM_HALT(c1);\n");
+          ::fprintf(file, " return m.FSM_HALT(c);\n");
         else
           ::fprintf(file, " return m.FSM_HALT();\n");
       }
@@ -3543,7 +3392,7 @@ void Pattern::gencode_dfa_closure(FILE *file, const DFA::State *state, int nest,
       ::fprintf(file, "%*s", 2*nest, "");
       if (lo == hi)
       {
-        ::fprintf(file, "if (c1 == ");
+        ::fprintf(file, "if (c == ");
         print_char(file, lo);
         ::fprintf(file, ")");
       }
@@ -3551,20 +3400,20 @@ void Pattern::gencode_dfa_closure(FILE *file, const DFA::State *state, int nest,
       {
         ::fprintf(file, "if (");
         print_char(file, lo);
-        ::fprintf(file, " <= c1)");
+        ::fprintf(file, " <= c)");
       }
       else
       {
         ::fprintf(file, "if (");
         print_char(file, lo);
-        ::fprintf(file, " <= c1 && c1 <= ");
+        ::fprintf(file, " <= c && c <= ");
         print_char(file, hi);
         ::fprintf(file, ")");
       }
       if (target_index == Const::IMAX)
       {
         if (peek)
-          ::fprintf(file, " return m.FSM_HALT(c1);\n");
+          ::fprintf(file, " return m.FSM_HALT(c);\n");
         else
           ::fprintf(file, " return m.FSM_HALT();\n");
       }
@@ -3637,8 +3486,6 @@ void Pattern::graph_dfa(const DFA::State *start) const
               ::fprintf(file, "?%u", i->lazy());
             if (i->anchor())
               ::fprintf(file, "^");
-            if (i->greedy())
-              ::fprintf(file, "!");
             if (i->ticked())
               ::fprintf(file, "'");
             if (i->negate())
@@ -4565,7 +4412,7 @@ void Pattern::gen_match_hfa_start(DFA::State *start, HFA::State& index, HFA::Sta
       hfa_.states[start->index].insert(next_state->index);
       Char lo = edge->first;
       Char hi = edge->second.first;
-      DBGLOG("0 HFA %p: %u..%u -> %p", state, lo, hi, next_state);
+      DBGLOG("0 HFA %p: %u..%u -> %p", start, lo, hi, next_state);
       hashes[next_state][0].insert(lo, hi);
     }
   }
@@ -4711,26 +4558,31 @@ bool Pattern::match_hfa_transitions(size_t level, const HFA::Hashes& hashes, con
 void Pattern::write_predictor(FILE *file) const
 {
   ::fprintf(file, "extern const reflex::Pattern::Pred reflex_pred_%s[%zu] = {", opt_.n.empty() ? "FSM" : opt_.n.c_str(), 2 + len_ + (len_ == 0) * 256 + Const::HASH + (lbk_ > 0) * 68);
-  ::fprintf(file, "\n  %3hhu,%3hhu,", static_cast<uint8_t>(len_), (static_cast<uint8_t>(min_ | (one_ << 4) | ((lbk_ > 0) << 5))));
+  ::fprintf(file, "\n  %3hhu,%3hhu,", static_cast<uint8_t>(len_), (static_cast<uint8_t>(min_ | (one_ << 4) | ((lbk_ > 0) << 5) | (bol_ << 6))));
+  // save match characters chr_[0..len_-1]
   for (size_t i = 0; i < len_; ++i)
     ::fprintf(file, "%s%3hhu,", ((i + 2) & 0xF) ? "" : "\n  ", static_cast<uint8_t>(chr_[i]));
   if (len_ == 0)
   {
+    // save bitap bit_[] parameters
     for (Char i = 0; i < 256; ++i)
       ::fprintf(file, "%s%3hhu,", (i & 0xF) ? "" : "\n  ", static_cast<uint8_t>(~bit_[i]));
   }
-  if (min_ >= 4)
+  if (min_ < 4)
   {
-    for (Hash i = 0; i < Const::HASH; ++i)
-      ::fprintf(file, "%s%3hhu,", (i & 0xF) ? "" : "\n  ", static_cast<uint8_t>(~pmh_[i]));
-  }
-  else
-  {
+    // save predict match PM4 pma_[] parameters
     for (Hash i = 0; i < Const::HASH; ++i)
       ::fprintf(file, "%s%3hhu,", (i & 0xF) ? "" : "\n  ", static_cast<uint8_t>(~pma_[i]));
   }
+  else
+  {
+    // save predict match hash pmh_[] parameters
+    for (Hash i = 0; i < Const::HASH; ++i)
+      ::fprintf(file, "%s%3hhu,", (i & 0xF) ? "" : "\n  ", static_cast<uint8_t>(~pmh_[i]));
+  }
   if (lbk_ > 0)
   {
+    // save lookback parameters lbk_ lbm_ cbk_[] after s-t cut and first s-t cut pattern characters fst_[]
     ::fprintf(file, "\n  %3hhu,%3hhu,%3hhu,%3hhu,", static_cast<uint8_t>(lbk_ & 0xff), static_cast<uint8_t>(lbk_ >> 8), static_cast<uint8_t>(lbm_ & 0xff), static_cast<uint8_t>(lbm_ >> 8));
     for (size_t i = 0; i < 256; i += 8)
     {

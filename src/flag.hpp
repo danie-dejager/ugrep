@@ -169,6 +169,7 @@ extern size_t flag_width;
 extern size_t flag_zmax;
 extern const char *flag_binary_files;
 extern const char *flag_color;
+extern const char *flag_color_query; // internal flag
 extern const char *flag_colors;
 extern const char *flag_config;
 extern const char *flag_devices;
@@ -198,9 +199,9 @@ extern const char *flag_view;
 extern std::string              flag_filter;
 extern std::string              flag_hyperlink_prefix; // internal flag
 extern std::string              flag_hyperlink_path; // internal flag
+extern std::string              flag_regexp; // internal flag
 extern std::set<std::string>    flag_config_files; // internal flag
 extern std::set<std::string>    flag_ignore_files;
-extern std::vector<std::string> flag_regexp;
 extern std::vector<std::string> flag_file;
 extern std::vector<std::string> flag_file_type;
 extern std::vector<std::string> flag_file_extension;

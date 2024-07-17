@@ -3,15 +3,17 @@
 Why use ugrep?
 --------------
 
-- Ugrep is a true drop-in replacement for GNU grep (assuming you [rename or symlink `ugrep` to `grep`, `egrep` and `fgrep`](#grep)), unlike many other popular grep claiming to be "grep alternatives" or "replacements" when those actually implement incompatible command-line options and use a different, incompatible regex matcher i.e. Perl regex versus POSIX regex grep (ugrep supports both)
+- Ugrep is a true drop-in replacement for GNU grep (assuming you [copy or symlink `ug` to `grep`, `egrep` and `fgrep`](#grep)), unlike many other popular grep claiming to be "grep alternatives" or "replacements" when those actually implement incompatible command-line options and use a different, incompatible regex matcher i.e. Perl regex versus POSIX regex grep (ugrep supports both)
 
-- Ugrep is fast, user-friendly, and equipped with a ton of new features that surpass other grep, benchmarks also show that [ugrep is (one of) the fastest grep](https://github.com/Genivia/ugrep-benchmarks) and will be getting even faster
+- Ugrep is fast, user-friendly, and equipped with a ton of new features that users wanted
 
-- An easy-to-use user manual with installation instructions at [ugrep.com](https://ugrep.com)
+- Benchmarks show that [ugrep is (one of) the fastest grep](https://github.com/Genivia/ugrep-benchmarks) using the high-performance DFA-based regex matcher [RE/flex](https://github.com/Genivia/RE-flex)
 
-- Ugrep includes an interactive TUI with built-in help and options to control searching and a file (pre)view split screen
+- A quick user guide with installation instructions at [ugrep.com](https://ugrep.com)
 
-*Option -Q opens a query TUI to search files as you type!*
+- Includes a TUI with built-in help, interactive search with search mode and options selection, and a file preview split screen
+
+*Option -Q opens a query TUI to search files as you type*
 <br>
 <img src="https://www.genivia.com/images/scranim.gif" width="438" alt="">
 
@@ -22,9 +24,9 @@ Development roadmap
 
 - #1 priority is quality assurance to continue to make sure ugrep has no bugs and is reliable
 
-- add new and updated features, including [indexing (beta release)](https://github.com/Genivia/ugrep-indexer)
+- make ugrep run even faster, see [#385](https://github.com/Genivia/ugrep/issues/385)
 
-- further increase performance and share [reproducible performance results](https://github.com/Genivia/ugrep-benchmarks) with the community, showing that ugrep is almost always faster than other grep tools
+- share [reproducible performance results](https://github.com/Genivia/ugrep-benchmarks)
 
 Overview
 --------
@@ -346,6 +348,12 @@ steps further below.
 You can use the standard NetBSD package installer (pkgsrc):
 <http://cdn.netbsd.org/pub/pkgsrc/current/pkgsrc/textproc/ugrep/README.html>
 
+### OpenBSD
+
+    $ pkg_add ugrep
+
+Check <https://openports.pl/path/sysutils/ugrep> for version info.
+
 ### OpenSUSE
 
     $ zypper install ugrep
@@ -395,19 +403,13 @@ You can always add these later, when you need these features:
   the [zstd](http://facebook.github.io/zstd) library (optional, not required),
   e.g. with `sudo apt-get install -y libzstd-dev`.  To search `.br` files,
   install the [brotli](https://github.com/google/brotli) library (optional, not
-  required), e.g. with `sudo apt-get install -y brotli`.  To search `.bz3`
-  files, install the [bzip3](https://github.com/kspalaiologos/bzip3) library
-  (optional, not required), e.g. with `sudo apt-get install -y bzip3`.
+  required), e.g. with `sudo apt-get install -y libbrotli-dev`.  To search
+  `.bz3` files, install the [bzip3](https://github.com/kspalaiologos/bzip3)
+  library (optional, not required), e.g. with `sudo apt-get install -y bzip3`.
 
 **Note:** even if your system has command line utilities, such as `bzip2`, that
 does not necessarily mean that the development libraries such as `libbz2` are
 installed.  The *development libraries* should be installed.
-
-After installing one or more of these libraries, re-execute the commands to
-rebuild `ugrep`:
-
-    $ cd ugrep
-    $ ./build.sh
 
 **Note:** some Linux systems may not be configured to load dynamic libraries
 from `/usr/local/lib`, causing a library load error when running `ugrep`.  To
@@ -416,7 +418,7 @@ your `~/.bashrc` file.  Or run `sudo ldconfig /usr/local/lib`.
 
 ### Other platforms: step 3 build
 
-Build `ugrep` on Unix-like systems with colors enabled by default:
+Execute the `./build.sh` script to build `ugrep`:
 
     $ cd ugrep
     $ ./build.sh
@@ -430,24 +432,36 @@ Note that `ug` is the same as `ugrep` but also loads the configuration file
 .ugrep when present in the working directory or home directory.  This means
 that you can define your default options for `ug` in .ugrep.
 
-To build `ugrep` with specific hard defaults enabled, such as a pager:
+Alternative paths to installed or local libraries may be specified with
+`./build.sh`.  To get help on the available build options:
 
-    $ cd ugrep
+    $ ./build.sh --help
+
+You can build static executables by specifying:
+
+    $ ./build.sh --enable-static
+
+**Note:** this may fail if libraries don't link statically, such as brotli.
+In that case try `./build.sh --enable-static --without-brotli`.
+
+You can build `ugrep` with customized defaults enabled, such as a pager:
+
     $ ./build.sh --enable-pager
 
 Options to select defaults for builds include:
 
+- `--help` display build options
+- `--enable-static` build static executables, if possible
 - `--enable-hidden` always search hidden files and directories
 - `--enable-pager` always use a pager to display output on terminals
 - `--enable-pretty` colorize output to terminals and add filename headings
 - `--disable-auto-color` disable automatic colors, requires ugrep option `--color=auto` to show colors
 - `--disable-mmap` disable memory mapped files
 - `--disable-sse2` disable SSE2 and AVX optimizations
-- `--disable-avx` disable AVX optimizations, but compile with SSE2 when supported
+- `--disable-avx2` disable AVX2 and AVX512BW optimizations, but compile with SSE2 when supported
 - `--disable-neon` disable ARM NEON/AArch64 optimizations
 - `--with-grep-path` the default `-f` path if `GREP_PATH` is not defined
 - `--with-grep-colors` the default colors if `GREP_COLORS` is not defined
-- `--help` display build options
 
 After the build completes, copy `ugrep/bin/ugrep` and `ugrep/bin/ug` to a
 convenient location, for example in your `~/bin` directory. Or, if you may want
@@ -915,10 +929,10 @@ To list all shell files recursively, based on extensions and shebangs with `-l`
 ### Advanced examples
 
 To search for `main` in source code while ignoring strings and comment blocks
-we can use *negative patterns* with option `-N` to skip unwanted matches in
+you can use *negative patterns* with option `-N` to skip unwanted matches in
 C/C++ quoted strings and comment blocks:
 
-    ug -r -nkw -e 'main' -N '"(\\.|\\\r?\n|[^\\\n"])*"|//.*|/\*([^*]|\n|(\*+([^*/]|\n)))*\*+\/' myproject
+    ug -r -nkw -e 'main' -N '"(\\.|\\\r?\n|[^\\\n"])*"|//.*|/\*(.*\n)*?.*\*+\/' myproject
 
 This is a lot of work to type in correctly!  If you are like me, I don't want
 to spend time fiddling with regex patterns when I am working on something more
@@ -934,21 +948,22 @@ and include symlinks to files and directories with `-R`:
 
     ug -R -tc,c++ -nkw 'main' -f c/zap_strings -f c/zap_comments myproject
 
-What if we are only looking for the identifier `main` but not as a function
-`main(`?  We can use a negative pattern for this to skip unwanted `main\h*(`
-pattern matches:
+What if you only want to look for the identifier `main` but not as a function
+`main(`?  In this case, use a negative pattern for this to skip unwanted
+`main\h*(` pattern matches:
 
     ug -R -tc,c++ -nkw -e 'main' -N 'main\h*\(' -f c/zap_strings -f c/zap_comments myproject
 
 This uses the `-e` and `-N` options to explicitly specify a pattern and a
 negative pattern, respectively, which is essentially forming the pattern
 `main|(?^main\h*\()`, where `\h` matches space and tab.  In general, negative
-patterns are useful to filter out pattern matches we are not interested in.
+patterns are useful to filter out pattern matches that we are not interested
+in.
 
-As another example, we may want to search for the word `FIXME` in C/C++ comment
-blocks.  To do so we can first select the comment blocks with **ugrep**'s
-predefined `c/comments` pattern AND THEN select lines with `FIXME` using a
-pipe:
+As another example, let's say we may want to search for the word `FIXME` in
+C/C++ comment blocks.  To do so we can first select the comment blocks with
+**ugrep**'s predefined `c/comments` pattern AND THEN select lines with `FIXME`
+using a pipe:
 
     ug -R -tc,c++ -nk -f c/comments myproject | ug -w 'FIXME'
 
@@ -956,8 +971,8 @@ Filtering results with pipes is generally easier than using AND-OR logic that
 some search tools use.  This approach follows the Unix spirit to keep utilities
 simple and use them in combination for more complex tasks.
 
-Say we want to produce a sorted list of all identifiers found in Java source
-code while skipping strings and comments:
+Let's produce a sorted list of all identifiers found in Java source code while
+skipping strings and comments:
 
     ug -R -tjava -f java/names myproject | sort -u
 
@@ -1177,7 +1192,7 @@ the top of the file, followed by the long options to override the defaults.
             Shift-Tab to navigate directories and to select a file to search.
             Press Enter to select lines to output.  Press ALT-l for option -l
             to list files, ALT-n for -n, etc.  Non-option commands include
-            ALT-] to increase context.  See also options --confirm, --delay,
+            ALT-] to increase context.  See also options --no-confirm, --delay,
             --split and --view.
     --no-confirm
             Do not confirm actions in -Q query TUI.  The default is confirm.
@@ -1326,15 +1341,13 @@ using ugrep query selection mode (press Enter to select lines):
             Only the names of files not containing selected lines are written
             to standard output.  Pathnames are listed once per file searched.
             If the standard input is searched, the string ``(standard input)''
-            is written.  If --tree is specified, outputs directories in a
-            tree-like format.
+            is written.
     -l, --files-with-matches
             Only the names of files containing selected lines are written to
             standard output.  ugrep will only search a file until a match has
             been found, making searches potentially less expensive.  Pathnames
             are listed once per file searched.  If the standard input is
-            searched, the string ``(standard input)'' is written.  If --tree is
-            specified, outputs directories in a tree-like format.
+            searched, the string ``(standard input)'' is written.
     -R, --dereference-recursive
             Recursively read all files under each directory.  Follow all
             symbolic links to files and directories, unlike -r.
@@ -1603,12 +1616,11 @@ same line, like XOR:
 ### Search this but not that with -v, -e, -N, -f, -L, -w, -x
 
     -e PATTERN, --regexp=PATTERN
-            Specify a PATTERN used during the search of the input: an input
-            line is selected if it matches any of the specified patterns.
-            Note that longer patterns take precedence over shorter patterns.
-            This option is most useful when multiple -e options are used to
-            specify multiple patterns, when a pattern begins with a dash (`-'),
-            to specify a pattern after option -f or after the FILE arguments.
+            Specify a PATTERN to search the input.  An input line is selected
+            if it matches any of the specified patterns.  This option is useful
+            when multiple -e options are used to specify multiple patterns, or
+            when a pattern begins with a dash (`-'), or to specify a pattern
+            after option -f or after the FILE arguments.
     -f FILE, --file=FILE
             Read newline-separated patterns from FILE.  White space in patterns
             is significant.  Empty lines in FILE are ignored.  If FILE does not
@@ -1633,18 +1645,11 @@ same line, like XOR:
     -w, --word-regexp
             The PATTERN is searched for as a word, such that the matching text
             is preceded by a non-word character and is followed by a non-word
-            character.  Word characters are letters, digits, and the
-            underscore.  With option -P, word characters are Unicode letters,
-            digits, and underscore.  This option has no effect if -x is also
-            specified.  If a PATTERN is specified, or -e PATTERN or -N PATTERN,
-            then this option has no effect on -f FILE patterns to allow -f FILE
-            patterns to narrow or widen the scope of the PATTERN search.
+            character.  Word-like characters are Unicode letters, digits and
+            connector punctuations such as underscore.
     -x, --line-regexp
             Select only those matches that exactly match the whole line, as if
-            the patterns are surrounded by ^ and $.  If a PATTERN is specified,
-            or -e PATTERN or -N PATTERN, then this option does not apply to
-            -f FILE patterns to allow -f FILE patterns to narrow or widen the
-            scope of the PATTERN search.
+            the patterns are surrounded by ^ and $.
 
 See also [Boolean query patterns with -%, -%%, --and, --not](#bool) for
 more powerful Boolean query options than the traditional GNU/BSD grep options.
@@ -1830,7 +1835,7 @@ U+0085, U+2028 and U+2029.
 
 To match C/C++ `/*...*/` multi-line comments:
 
-    ug '/\*([^*]|\n|(\*+([^*/]|\n)))*\*+\/' myfile.cpp
+    ug '/\*(.*\n)*?.*\*+\/' myfile.cpp
 
 To match C/C++ comments using the predefined `c/comments` patterns with
 `-f c/comments`, restricted to the matching part only with option `-o`:
@@ -3016,8 +3021,7 @@ To exclude `fuse` and `tmpfs` type file systems from recursive searches:
             If -o or -u is specified, counts the number of patterns matched.
             If -v is specified, counts the number of non-matching lines.  If
             -m1, (with a comma or --min-count=1) is specified, counts only
-            matching files without outputting zero matches.  If --tree is
-            specified, outputs directories in a tree-like format.
+            matching files without outputting zero matches.
 
 To count the number of lines in a file:
 
@@ -3140,6 +3144,11 @@ To display the line and column numbers of matches in XML with `--xml`:
             When output is sent to a terminal, enables --color, --heading, -n,
             --sort, --tree and -T when not explicitly disabled.  WHEN can be
             `never', `always', or `auto'.  The default is `auto'.
+    --tree, -^
+            Output directories with matching files in a tree-like format for
+            option -c or --count, -l or --files-with-matches, -L or
+            --files-without-match.  This option is enabled by --pretty when the
+            output is sent to a terminal.
 
 To change the color palette, set the `GREP_COLORS` environment variable or use
 `--colors=COLORS`.  The value is a colon-separated list of ANSI SGR parameters
@@ -3930,9 +3939,9 @@ in markdown:
 
            Option -f FILE matches patterns specified in FILE.
 
-           By default Unicode patterns are matched.  Option -U (--binary) disables
-           Unicode matching for ASCII and binary pattern matching.  Non-Unicode
-           matching is generally more efficient.
+           By default Unicode patterns are matched.  Option -U (--ascii or --binary)
+           disables Unicode matching for ASCII and binary pattern matching.  Non-
+           Unicode matching is more efficient.
 
            ugrep accepts input of various encoding formats and normalizes the output
            to UTF-8.  When a UTF byte order mark is present in the input, the input
@@ -4096,8 +4105,7 @@ in markdown:
                   -o or -u is specified, counts the number of patterns matched.  If
                   -v is specified, counts the number of non-matching lines.  If -m1,
                   (with a comma or --min-count=1) is specified, counts only matching
-                  files without outputting zero matches.  If --tree is specified,
-                  outputs directories in a tree-like format.
+                  files without outputting zero matches.
 
            --color[=WHEN], --colour[=WHEN]
                   Mark up the matching text with the colors specified with option
@@ -4136,8 +4144,8 @@ in markdown:
            --no-config
                   Do not automatically load the default .ugrep configuration file.
 
-           --confirm
-                  Confirm actions in -Q query TUI.  The default is confirm.
+           --no-confirm
+                  Do not confirm actions in -Q query TUI.  The default is confirm.
 
            --cpp  Output file matches in C++.  See also options --format and -u.
 
@@ -4180,11 +4188,10 @@ in markdown:
 
            -e PATTERN, --regexp=PATTERN
                   Specify a PATTERN to search the input.  An input line is selected
-                  if it matches any of the specified patterns.  Note that longer
-                  patterns take precedence over shorter patterns.  This option is
-                  most useful when multiple -e options are used to specify multiple
-                  patterns, when a pattern begins with a dash (`-'), to specify a
-                  pattern after option -f or after the FILE arguments.
+                  if it matches any of the specified patterns.  This option is
+                  useful when multiple -e options are used to specify multiple
+                  patterns, or when a pattern begins with a dash (`-'), or to
+                  specify a pattern after option -f or after the FILE arguments.
 
            --encoding=ENCODING
                   The encoding format of the input.  The default ENCODING is binary
@@ -4465,16 +4472,14 @@ in markdown:
                   Only the names of files not containing selected lines are written
                   to standard output.  Pathnames are listed once per file searched.
                   If the standard input is searched, the string ``(standard input)''
-                  is written.  If --tree is specified, outputs directories in a
-                  tree-like format.
+                  is written.
 
            -l, --files-with-matches
                   Only the names of files containing selected lines are written to
                   standard output.  ugrep will only search a file until a match has
                   been found, making searches potentially less expensive.  Pathnames
                   are listed once per file searched.  If the standard input is
-                  searched, the string ``(standard input)'' is written.  If --tree
-                  is specified, outputs directories in a tree-like format.
+                  searched, the string ``(standard input)'' is written.
 
            --label=LABEL
                   Displays the LABEL value when input is read from standard input
@@ -4596,8 +4601,8 @@ in markdown:
                   select a file to search.  Press Enter to select lines to output.
                   Press ALT-l for option -l to list files, ALT-n for -n, etc.
                   Non-option commands include ALT-] to increase context and ALT-} to
-                  increase fuzzyness.  See also options --confirm, --delay, --split
-                  and --view.
+                  increase fuzzyness.  See also options --no-confirm, --delay,
+                  --split and --view.
 
            -q, --quiet, --silent
                   Quiet mode: suppress all output.  Only search a file until a match
@@ -4705,9 +4710,10 @@ in markdown:
                   a match if specified, otherwise TAG.  The default is `___'.
 
            --tree, -^
-                  Output directories with matching files in a tree-like format when
-                  options -c, -l or -L are used.  This option is enabled by --pretty
-                  when the output is sent to a terminal.
+                  Output directories with matching files in a tree-like format for
+                  option -c or --count, -l or --files-with-matches, -L or
+                  --files-without-match.  This option is enabled by --pretty when
+                  the output is sent to a terminal.
 
            -U, --ascii, --binary
                   Disables Unicode matching for ASCII and binary matching.  PATTERN
@@ -4740,13 +4746,8 @@ in markdown:
            -w, --word-regexp
                   The PATTERN is searched for as a word, such that the matching text
                   is preceded by a non-word character and is followed by a non-word
-                  character.  Word characters are letters, digits and the
-                  underscore.  With option -P, word characters are Unicode letters,
-                  digits and underscore.  This option has no effect if -x is also
-                  specified.  If a PATTERN is specified, or -e PATTERN or -N
-                  PATTERN, then this option has no effect on -f FILE patterns to
-                  allow -f FILE patterns to narrow or widen the scope of the PATTERN
-                  search.
+                  character.  Word-like characters are Unicode letters, digits and
+                  connector punctuations such as underscore.
 
            --width[=NUM]
                   Truncate the output to NUM visible characters per line.  The width
@@ -4761,10 +4762,7 @@ in markdown:
 
            -x, --line-regexp
                   Select only those matches that exactly match the whole line, as if
-                  the patterns are surrounded by ^ and $.  If a PATTERN is
-                  specified, or -e PATTERN or -N PATTERN, then this option has no
-                  effect on -f FILE patterns to allow -f FILE patterns to narrow or
-                  widen the scope of the PATTERN search.
+                  the patterns are surrounded by ^ and $.
 
            --xml  Output file matches in XML.  If -H, -n, -k, or -b is specified,
                   additional values are output.  See also options --format and -u.
@@ -5253,10 +5251,6 @@ in markdown:
 
                   $ ugrep -o '\w+' myfile.txt
 
-           List all ASCII words in a file:
-
-                  $ ugrep -o '[[:word:]]+' myfile.txt
-
            List the laughing face emojis (Unicode code points U+1F600 to U+1F60F):
 
                   $ ugrep -o '[\x{1F600}-\x{1F60F}]' myfile.txt
@@ -5277,9 +5271,16 @@ in markdown:
 
                   $ ugrep -o -C20 -R -n -k -tjs FIXME
 
-           List the C/C++ comments in a file with line numbers:
 
-                  $ ugrep -n -e '//.*' -e '/\*([^*]|(\*+[^*/]))*\*+\/' myfile.cpp
+           Find blocks of text between lines matching BEGIN and END by using a lazy
+           quantifier `*?' to match only what is necessary and pattern `\n' to match
+           newlines:
+
+                  $ ugrep -n 'BEGIN.*\n(.*\n)*?.*END' myfile.txt
+
+           Likewise, list the C/C++ comments in a file and line numbers:
+
+                  $ ugrep -n -e '//.*' -e '/\*(.*\n)*?.*\*+\/' myfile.cpp
 
            The same, but using predefined pattern c++/comments:
 
@@ -5294,7 +5295,7 @@ in markdown:
 
                   $ ugrep -e FIXME -f cpp/zap_strings myfile.cpp
 
-           Find lines with `FIXME' or `TODO', showing line numberes:
+           Find lines with `FIXME' or `TODO', showing line numbers:
 
                   $ ugrep -n -e FIXME -e TODO myfile.cpp
 
@@ -5377,21 +5378,21 @@ in markdown:
                   $ ugrep --help fuzzy
 
     COPYRIGHT
-           Copyright (c) 2021-2024 Robert A. van Engelen <engelen@acm.org>
+           Copyright (c) 2021,2024 Robert A. van Engelen <engelen@acm.org>
 
            ugrep is released under the BSD-3 license.  All parts of the software
            have reasonable copyright terms permitting free redistribution.  This
            includes the ability to reuse all or parts of the ugrep source tree.
 
+    SEE ALSO
+           ugrep-indexer(1), grep(1), zgrep(1).
+
     BUGS
            Report bugs at: <https://github.com/Genivia/ugrep/issues>
 
-    SEE ALSO
-           grep(1).
 
 
-
-    ugrep 5.0.0                     February 15, 2024                       UGREP(1)
+    ugrep 6.2.0                       July 9, 2024                          UGREP(1)
 
 🔝 [Back to table of contents](#toc)
 

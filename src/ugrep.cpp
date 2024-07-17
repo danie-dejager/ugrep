@@ -247,9 +247,56 @@ struct stat output_stat;
 // container of inodes to detect directory cycles when symlinks are traversed with --dereference
 std::set<ino_t> visited;
 
-#ifdef HAVE_STATVFS
+// use statvfs() for --include-fs and --exclude-fs
+#if defined(HAVE_STATVFS)
+
 // containers of file system ids to exclude from recursive searches or include in recursive searches
 std::set<uint64_t> exclude_fs_ids, include_fs_ids;
+
+// the type of statvfs buffer to use
+typedef struct statvfs stat_fs_t;
+
+// wrapper to call statvfs()
+inline int stat_fs(const char *path, stat_fs_t *buf)
+{
+  return statvfs(path, buf);
+}
+
+#if defined(_AIX) || defined(__TOS_AIX__)
+// NetBSD compatible struct fsid_t with unsigned integers f_fsid.val[2]
+inline uint64_t fsid_to_uint64(fsid_t& fsid)
+{
+  return static_cast<uint64_t>(fsid.val[0]) | (static_cast<uint64_t>(fsid.val[1]) << 32);
+}
+#else
+// POSIX compliant unsigned integer f_fsid
+template<typename T>
+inline uint64_t fsid_to_uint64(T& fsid)
+{
+  return static_cast<uint64_t>(fsid);
+}
+#endif
+
+// if statvfs() is not available then use statfs() for --include-fs and --exclude-fs
+#elif defined(HAVE_STATFS)
+
+// containers of file system ids to exclude from recursive searches or include in recursive searches
+std::set<uint64_t> exclude_fs_ids, include_fs_ids;
+
+// the type of statfs buffer to use
+typedef struct statfs stat_fs_t;
+
+// wrapper to call statfs()
+inline int stat_fs(const char *path, stat_fs_t *buf)
+{
+  return statfs(path, buf);
+}
+
+inline uint64_t fsid_to_uint64(fsid_t& fsid)
+{
+  return static_cast<uint64_t>(fsid.val[0]) | (static_cast<uint64_t>(fsid.val[1]) << 32);
+}
+
 #endif
 
 #endif
@@ -355,6 +402,7 @@ size_t flag_width                  = 0;
 size_t flag_zmax                   = 1;
 const char *flag_binary_files      = "binary";
 const char *flag_color             = DEFAULT_COLOR;
+const char *flag_color_query       = NULL;
 const char *flag_colors            = NULL;
 const char *flag_config            = NULL;
 const char *flag_devices           = NULL;
@@ -384,9 +432,9 @@ const char *flag_view              = "";
 std::string              flag_filter;
 std::string              flag_hyperlink_prefix;
 std::string              flag_hyperlink_path;
+std::string              flag_regexp;
 std::set<std::string>    flag_config_files;
 std::set<std::string>    flag_ignore_files;
-std::vector<std::string> flag_regexp;
 std::vector<std::string> flag_file;
 std::vector<std::string> flag_file_type;
 std::vector<std::string> flag_file_extension;
@@ -643,7 +691,7 @@ inline bool getline(reflex::BufferedInput& input, std::string& line)
 }
 
 // read a line from mmap memory, returns true when eof
-inline bool getline(const char*& here, size_t& left)
+inline bool getline(const char *& here, size_t& left)
 {
   // read line from mmap memory
   if (left == 0)
@@ -662,7 +710,7 @@ inline bool getline(const char*& here, size_t& left)
 }
 
 // read a line from mmap memory or from buffered input or from unbuffered input, returns true when eof
-inline bool getline(const char*& here, size_t& left, reflex::BufferedInput& buffered_input, reflex::Input& input, std::string& line)
+inline bool getline(const char *& here, size_t& left, reflex::BufferedInput& buffered_input, reflex::Input& input, std::string& line)
 {
   if (here != NULL)
   {
@@ -707,14 +755,14 @@ inline bool getline(const char*& here, size_t& left, reflex::BufferedInput& buff
   return ch == EOF && line.empty();
 }
 
-// return true if s[0..n-1] contains a \0 (NUL) or a non-displayable invalid UTF-8 sequence, which depends on -U and -W
+// return true if s[0..n-1] contains a \0 (NUL) or a non-displayable invalid UTF-8 encoding sequence
 inline bool is_binary(const char *s, size_t n)
 {
-  // file is binary if it contains a \0 (NUL)
+  // file is binary if it contains a \0 (NUL) which is what grep checks
   if (memchr(s, '\0', n) != NULL)
     return true;
 
-  // not -U or -W: file is binary if it has invalid UTF-8
+  // not -U nor -W: file is binary if it has an invalid UTF-8 encoding
   if (!flag_binary || flag_with_hex)
   {
     if (n == 1)
@@ -2333,7 +2381,7 @@ struct Grep {
   // extend the reflex::AbstractMatcher::Handler with a grep object reference and references to some of the grep::search locals
   struct GrepHandler : public reflex::AbstractMatcher::Handler {
 
-    GrepHandler(Grep& grep, const char*& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
+    GrepHandler(Grep& grep, const char *& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
       :
         grep(grep),
         pathname(pathname),
@@ -2346,15 +2394,15 @@ struct Grep {
         stop(stop)
     { }
 
-    Grep&        grep;     // grep object
-    const char*& pathname; // grep::search argument pathname
-    size_t&      lineno;   // grep::search lineno local variable
-    bool&        heading;  // grep::search heading local variable
-    bool&        binfile;  // grep::search binfile local variable
-    bool&        hex;      // grep::search hex local variable
-    bool&        binary;   // grep::search binary local variable
-    size_t&      matches;  // grep::search matches local variable
-    bool&        stop;     // grep::search stop local variable
+    Grep&         grep;     // grep object
+    const char *& pathname; // grep::search argument pathname
+    size_t&       lineno;   // grep::search lineno local variable
+    bool&         heading;  // grep::search heading local variable
+    bool&         binfile;  // grep::search binfile local variable
+    bool&         hex;      // grep::search hex local variable
+    bool&         binary;   // grep::search binary local variable
+    size_t&       matches;  // grep::search matches local variable
+    bool&         stop;     // grep::search stop local variable
 
     // define a reflex::AbstractMatcher functor to handle buffer shifts by moving restline string from the buffer to a temporary string buffer
     virtual void operator()(reflex::AbstractMatcher&, const char*, size_t, size_t) override
@@ -2368,7 +2416,7 @@ struct Grep {
     }
 
     // get the start of the after/before context, if present
-    void begin_before(reflex::AbstractMatcher& matcher, const char *buf, size_t len, size_t num, const char*& ptr, size_t& size, size_t& offset)
+    void begin_before(reflex::AbstractMatcher& matcher, const char *buf, size_t len, size_t num, const char *& ptr, size_t& size, size_t& offset)
     {
       ptr = NULL;
       size = 0;
@@ -2408,7 +2456,7 @@ struct Grep {
     }
 
     // advance to the next before context, if present
-    void next_before(const char *buf, size_t len, size_t num, const char*& ptr, size_t& size, size_t& offset)
+    void next_before(const char *buf, size_t len, size_t num, const char *& ptr, size_t& size, size_t& offset)
     {
       if (ptr == NULL)
         return;
@@ -2441,7 +2489,7 @@ struct Grep {
   // extend event GrepHandler to output invert match lines for -v
   struct InvertMatchGrepHandler : public GrepHandler {
 
-    InvertMatchGrepHandler(Grep& grep, const char*& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
+    InvertMatchGrepHandler(Grep& grep, const char *& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
       :
         GrepHandler(grep, pathname, lineno, heading, binfile, hex, binary, matches, stop)
     { }
@@ -2523,7 +2571,7 @@ struct Grep {
   // extend event GrepHandler to output formatted invert match lines for --format -v
   struct FormatInvertMatchGrepHandler : public GrepHandler {
 
-    FormatInvertMatchGrepHandler(Grep& grep, const char*& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
+    FormatInvertMatchGrepHandler(Grep& grep, const char *& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
       :
         GrepHandler(grep, pathname, lineno, heading, binfile, hex, binary, matches, stop)
     { }
@@ -2546,7 +2594,7 @@ struct Grep {
         // output --format-open
         if (matches == 0)
         {
-          // --format-open or --format-close: we must acquire lock early before Stats::found_part()
+          // --format-open or --format-close: we must out.acquire() lock before Stats::found_part()
           if (flag_format_open != NULL || flag_format_close != NULL)
             grep.out.acquire();
 
@@ -2582,7 +2630,7 @@ struct Grep {
   // extend event GrepHandler to output any context lines for -y
   struct AnyLineGrepHandler : public GrepHandler {
 
-    AnyLineGrepHandler(Grep& grep, const char*& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
+    AnyLineGrepHandler(Grep& grep, const char *& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
       :
         GrepHandler(grep, pathname, lineno, heading, binfile, hex, binary, matches, stop)
     { }
@@ -2752,7 +2800,7 @@ struct Grep {
 
     };
 
-    ContextGrepHandler(Grep& grep, const char*& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
+    ContextGrepHandler(Grep& grep, const char *& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
       :
         AnyLineGrepHandler(grep, pathname, lineno, heading, binfile, hex, binary, matches, stop)
     { }
@@ -3042,7 +3090,7 @@ struct Grep {
 
     };
 
-    InvertContextGrepHandler(Grep& grep, const char*& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
+    InvertContextGrepHandler(Grep& grep, const char *& pathname, size_t& lineno, bool& heading, bool& binfile, bool& hex, bool& binary, size_t& matches, bool& stop)
       :
         AnyLineGrepHandler(grep, pathname, lineno, heading, binfile, hex, binary, matches, stop)
     { }
@@ -3610,10 +3658,13 @@ struct Grep {
 #endif
     }
     else
-#endif
     {
       input = reflex::Input(file_in, flag_encoding_type);
     }
+#else
+    (void)find; // appease -Wunused
+    input = reflex::Input(file_in, flag_encoding_type);
+#endif
 
     return true;
   }
@@ -3691,13 +3742,13 @@ struct Grep {
       // find the command corresponding to the suffix
       while (true)
       {
-        while (isspace(*command))
+        while (isspace(static_cast<unsigned char>(*command)))
           ++command;
 
         if (*command == '*')
           default_command = strchr(command, ':');
 
-        if (strncmp(suffix, command, sep) == 0 && (command[sep] == ':' || command[sep] == ',' || isspace(command[sep])))
+        if (strncmp(suffix, command, sep) == 0 && (command[sep] == ':' || command[sep] == ',' || isspace(static_cast<unsigned char>(command[sep]))))
         {
           command = strchr(command, ':');
           break;
@@ -3726,6 +3777,7 @@ struct Grep {
         {
           int pid;
 
+          // fork to execute the specified --filter utility command on the input to produce filtered output
           if ((pid = fork()) == 0)
           {
             // child process
@@ -3744,6 +3796,17 @@ struct Grep {
             dup2(fd[1], STDOUT_FILENO);
             close(fd[1]);
 
+            // -q or -q: suppress error messages sent to stderr by the filter command by redirecting to /dev/null
+            if (flag_quiet || flag_no_messages)
+            {
+              int dev_null = open("/dev/null", O_WRONLY);
+              if (dev_null >= 0)
+              {
+                dup2(dev_null, STDERR_FILENO);
+                close(dev_null);
+              }
+            }
+
             // populate argv[] with the command and its arguments, thereby destroying flag_filter
             std::vector<const char*> args;
 
@@ -3751,12 +3814,12 @@ struct Grep {
 
             while (*arg != '\0' && *arg != ',')
             {
-              while (isspace(*arg))
+              while (isspace(static_cast<unsigned char>(*arg)))
                 ++arg;
 
               char *p = arg;
 
-              while (*p != '\0' && *p != ',' && !isspace(*p))
+              while (*p != '\0' && *p != ',' && !isspace(static_cast<unsigned char>(*p)))
                 ++p;
 
               if (p > arg)
@@ -3960,6 +4023,7 @@ struct Grep {
     }
     else
     {
+      // assign input to the matcher to search
       matcher->input(input);
 
 #if !defined(HAVE_PCRE2) && defined(HAVE_BOOST_REGEX)
@@ -4006,12 +4070,14 @@ struct Grep {
     if (avail == 0)
       return false;
 
-    if (avail > 65536)
-      avail = 65536;
+    // check up to 32K ahead in buffer
+    if (avail > 32768)
+      avail = 32768;
 
     // do not cut off right after the first UTF-8 byte
-    if ((matcher->begin()[avail - 1] & 0xc0) == 0xc0)
-      --avail;
+    if (avail > 0 && (matcher->begin()[avail - 1] & 0xc0) == 0xc0)
+      if (--avail == 0)
+        return true;
 
     return is_binary(matcher->begin(), avail);
   }
@@ -4660,7 +4726,7 @@ int main(int argc, const char **argv)
 }
 
 // set -1,...,-9,-10,... recursion depth flags
-static void set_depth(const char*& arg)
+static void set_depth(const char *& arg)
 {
   const char *range = arg;
   char *rest = NULL;
@@ -5721,7 +5787,7 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                 break;
 
               default:
-                if (isdigit(*arg))
+                if (isdigit(static_cast<unsigned char>(*arg)))
                   set_depth_long(arg);
                 else
                   usage("invalid option --", arg);
@@ -5885,7 +5951,7 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
             break;
 
           case 'q':
-            flag_quiet = true;
+            flag_quiet = flag_no_messages = true;
             break;
 
           case 'R':
@@ -5955,7 +6021,7 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
 
           case 'Z':
             ++arg;
-            if (*arg == '=' || strncmp(arg, "best", 4) == 0 || isdigit(*arg) || strchr("+-~", *arg) != NULL)
+            if (*arg == '=' || strncmp(arg, "best", 4) == 0 || isdigit(static_cast<unsigned char>(*arg)) || strchr("+-~", *arg) != NULL)
             {
               flag_fuzzy = strtofuzzy(&arg[*arg == '='], "invalid argument -Z=");
               is_grouped = false;
@@ -6046,24 +6112,7 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
 // parse -e PATTERN and -N PATTERN
 void option_regexp(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, const char *arg, bool is_neg)
 {
-  if (flag_query)
-  {
-    // -Q: pass -e PATTERN and -N PATTERN patterns to the query engine
-    if (is_neg)
-    {
-      std::string neg_arg(arg);
-      neg_arg.insert(0, "(?^").append(")");
-      flag_regexp.emplace_back(neg_arg);
-    }
-    else
-    {
-      flag_regexp.emplace_back(arg);
-    }
-  }
-  else
-  {
-    pattern_args.emplace_back((flag_not ? CNF::PATTERN::NOT : CNF::PATTERN::NA) | (is_neg ? CNF::PATTERN::NEG : CNF::PATTERN::NA), arg);
-  }
+  pattern_args.emplace_back((flag_not ? CNF::PATTERN::NOT : CNF::PATTERN::ALT) | (is_neg ? CNF::PATTERN::NEG : CNF::PATTERN::ALT), arg);
 }
 
 // parse --and [PATTERN]
@@ -6072,13 +6121,10 @@ void option_and(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, in
   if (flag_not)
     usage("missing PATTERN for --not");
 
-  if (flag_query)
-    usage("option -Q does not support --and");
-
-  pattern_args.emplace_back(CNF::PATTERN::TERM, "");
+  pattern_args.emplace_back(CNF::PATTERN::AND, "");
 
   if (i + 1 < argc && *argv[i + 1] != '-')
-    pattern_args.emplace_back((flag_not ? CNF::PATTERN::NOT : CNF::PATTERN::NA), argv[++i]);
+    pattern_args.emplace_back((flag_not ? CNF::PATTERN::NOT : CNF::PATTERN::ALT), argv[++i]);
 }
 
 // parse --and=PATTERN
@@ -6087,11 +6133,8 @@ void option_and(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, co
   if (flag_not)
     usage("missing PATTERN for --not");
 
-  if (flag_query)
-    usage("option -Q does not support --and");
-
-  pattern_args.emplace_back(CNF::PATTERN::TERM, "");
-  pattern_args.emplace_back((flag_not ? CNF::PATTERN::NOT : CNF::PATTERN::NA), arg);
+  pattern_args.emplace_back(CNF::PATTERN::AND, "");
+  pattern_args.emplace_back((flag_not ? CNF::PATTERN::NOT : CNF::PATTERN::ALT), arg);
 }
 
 // parse --andnot [PATTERN]
@@ -6100,10 +6143,7 @@ void option_andnot(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args,
   if (flag_not)
     usage("missing PATTERN for --not");
 
-  if (flag_query)
-    usage("option -Q does not support --andnot");
-
-  pattern_args.emplace_back(CNF::PATTERN::TERM, "");
+  pattern_args.emplace_back(CNF::PATTERN::AND, "");
 
   flag_not = true;
 
@@ -6120,24 +6160,18 @@ void option_andnot(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args,
   if (flag_not)
     usage("missing PATTERN for --not");
 
-  if (flag_query)
-    usage("option -Q does not support --andnot");
-
-  pattern_args.emplace_back(CNF::PATTERN::TERM, "");
+  pattern_args.emplace_back(CNF::PATTERN::AND, "");
   pattern_args.emplace_back(CNF::PATTERN::NOT, arg);
 }
 
 // parse --not [PATTERN]
 void option_not(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int& i, int argc, const char **argv)
 {
-  if (flag_query)
-    usage("option -Q does not support --not");
-
   flag_not = !flag_not;
 
   if (i + 1 < argc && *argv[i + 1] != '-')
   {
-    pattern_args.emplace_back((flag_not ? CNF::PATTERN::NOT : CNF::PATTERN::NA), argv[++i]);
+    pattern_args.emplace_back((flag_not ? CNF::PATTERN::NOT : CNF::PATTERN::ALT), argv[++i]);
     flag_not = false;
   }
 }
@@ -6145,12 +6179,9 @@ void option_not(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, in
 // parse --not=PATTERN
 void option_not(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, const char *arg)
 {
-  if (flag_query)
-    usage("option -Q does not support --not");
-
   flag_not = !flag_not;
 
-  pattern_args.emplace_back((flag_not ? CNF::PATTERN::NOT : CNF::PATTERN::NA), arg);
+  pattern_args.emplace_back((flag_not ? CNF::PATTERN::NOT : CNF::PATTERN::ALT), arg);
   flag_not = false;
 }
 
@@ -6345,7 +6376,7 @@ void init(int argc, const char **argv)
     flag_basic_regexp = false;
     if (flag_fuzzy > 0)
       usage("options -P and -Z are not compatible");
-    for (const auto &arg : pattern_args)
+    for (const auto& arg : pattern_args)
       if ((arg.first & CNF::PATTERN::NEG) != 0)
         usage("options -P and -N are not compatible");
 #else
@@ -6365,21 +6396,59 @@ void init(int argc, const char **argv)
   if (flag_fixed_strings)
     flag_basic_regexp = false;
 
-  // populate the CNF with the collected regex pattern args, each arg points to a persistent command line argv[]
-  for (const auto &arg : pattern_args)
+  // -e, -N, --and, --andnot, --not
+  if (!pattern_args.empty())
   {
-    if (arg.first == CNF::PATTERN::TERM)
-      Static::bcnf.new_term();
+    if (flag_bool || flag_query)
+    {
+      // -Q: if --and, --andnot or --not specified then switch to bool mode, -F can't work with -N
+      for (const auto& arg : pattern_args)
+      {
+        if (arg.first == CNF::PATTERN::AND || arg.first == CNF::PATTERN::NOT)
+          flag_bool = true;
+        else if (arg.first == CNF::PATTERN::NEG && flag_fixed_strings)
+          usage("option -F with -% or -Q does not support -N PATTERN");
+      }
+
+      // -%: collect -e, --and, --andnot, --not patterns
+      const char *lparen = flag_bool ? "(" : "";
+      const char *rparen = flag_bool ? ")" : "";
+      bool sep = false;
+
+      for (const auto& arg : pattern_args)
+      {
+        if (sep)
+          flag_regexp.append(arg.first == CNF::PATTERN::AND ? " " : "\n");
+        sep = true;
+        if (arg.first == CNF::PATTERN::ALT)
+          flag_regexp.append(lparen).append(arg.second).append(rparen);
+        else if (arg.first == CNF::PATTERN::NEG && *arg.second != '\0')
+          flag_regexp.append("(?^").append(arg.second).append(")");
+        else if (arg.first == CNF::PATTERN::NOT && *arg.second != '\0')
+          flag_regexp.append("-(").append(arg.second).append(")");
+        else
+          sep = false;
+      }
+
+      if (!flag_query)
+        Static::bcnf.new_pattern(CNF::PATTERN::ALT, flag_regexp.c_str());
+    }
     else
-      Static::bcnf.new_pattern(arg.first, arg.second); // relies on options --bool, -F, -G, -w, -x and -f
+    {
+      // populate the CNF with the collected pattern args, each arg points to a persistent command line argv[]
+      for (const auto& arg : pattern_args)
+      {
+        if (arg.first == CNF::PATTERN::AND)
+          Static::bcnf.new_term();
+        else
+          Static::bcnf.new_pattern(arg.first, arg.second);
+      }
+    }
   }
 
   // --query: override --pager
   if (flag_query)
     flag_pager = NULL;
-
-  if (flag_query && !pattern_args.empty())
-    usage("-e PATTERN and -N PATTERN should be specified after option -Q");
 
   // --tree: require sort to produce directory tree
   if (flag_tree && flag_sort == NULL)
@@ -6835,27 +6904,27 @@ void init(int argc, const char **argv)
   if (flag_min_count > 0 && flag_invert_match && !flag_quiet && !flag_files_with_matches && !flag_files_without_match && !flag_count)
     abort("--min-count is not permitted with --invert-match");
 
-#ifdef HAVE_STATVFS
+#if defined(HAVE_STATVFS) || defined(HAVE_STATFS)
 
   // --exclude-fs: add file system ids to exclude
   for (const auto& mounts : flag_exclude_fs)
   {
-    struct statvfs buf;
+    stat_fs_t buf;
 
     if (mounts.empty())
     {
       if (Static::arg_files.empty())
       {
         // --exclude-fs without MOUNT points and no targets for recursive search: only include the working dir FS
-        if (statvfs(".", &buf) == 0)
-          include_fs_ids.insert(static_cast<uint64_t>(buf.f_fsid));
+        if (stat_fs(".", &buf) == 0)
+          include_fs_ids.insert(fsid_to_uint64(buf.f_fsid));
       }
       else
       {
         // --exclude-fs without MOUNT points: only include FS associated with the specified file and directory targets
         for (const auto& file : Static::arg_files)
-          if (statvfs(file, &buf) == 0)
-            include_fs_ids.insert(static_cast<uint64_t>(buf.f_fsid));
+          if (stat_fs(file, &buf) == 0)
+            include_fs_ids.insert(fsid_to_uint64(buf.f_fsid));
       }
     }
     else
@@ -6871,8 +6940,8 @@ void init(int argc, const char **argv)
         {
           std::string mount(mounts.substr(from, size));
 
-          if (statvfs(mount.c_str(), &buf) == 0)
-            exclude_fs_ids.insert(static_cast<uint64_t>(buf.f_fsid));
+          if (stat_fs(mount.c_str(), &buf) == 0)
+            exclude_fs_ids.insert(fsid_to_uint64(buf.f_fsid));
           else
             warning("--exclude-fs", mount.c_str());
         }
@@ -6888,13 +6957,13 @@ void init(int argc, const char **argv)
   // --include-fs: add file system ids to include
   for (const auto& mounts : flag_include_fs)
   {
-    struct statvfs buf;
+    stat_fs_t buf;
 
     if (mounts.empty())
     {
       // --include-fs without MOUNT points includes the working directory
-      if (statvfs(".", &buf) == 0)
-        include_fs_ids.insert(static_cast<uint64_t>(buf.f_fsid));
+      if (stat_fs(".", &buf) == 0)
+        include_fs_ids.insert(fsid_to_uint64(buf.f_fsid));
     }
     else
     {
@@ -6909,8 +6978,8 @@ void init(int argc, const char **argv)
         {
           std::string mount(mounts.substr(from, size));
 
-          if (statvfs(mount.c_str(), &buf) == 0)
-            include_fs_ids.insert(static_cast<uint64_t>(buf.f_fsid));
+          if (stat_fs(mount.c_str(), &buf) == 0)
+            include_fs_ids.insert(fsid_to_uint64(buf.f_fsid));
           else
             warning("--include-fs", mount.c_str());
         }
@@ -7013,7 +7082,7 @@ void init(int argc, const char **argv)
         {
           for (size_t j = 0; type_table[j].type != NULL; ++j)
           {
-            if (islower(type_table[j].type[0]))
+            if (islower(static_cast<unsigned char>(type_table[j].type[0])))
             {
               const char *s = strstr(type_table[j].extensions, type.c_str());
               if (s != NULL && (s == type_table[j].extensions || *--s == ','))
@@ -7200,11 +7269,20 @@ void init(int argc, const char **argv)
   {
     abort("option --filter-magic-label: ", error.what());
   }
+
+#if defined(__CYGWIN__) || defined(__MINGW32__) || defined(__MINGW64__)
+  // --filter: Cygwin forked process may hang when searching with multiple threads, force one worker thread
+  if (!flag_filter.empty())
+    flag_jobs = 1;
+#endif
 }
 
 // check TTY info and set colors
 void terminal()
 {
+  // check if standard output is a TTY
+  flag_tty_term = isatty(STDOUT_FILENO) != 0;
+
   if (flag_query)
   {
     // -Q: disable --quiet
@@ -7212,13 +7290,9 @@ void terminal()
   }
   else if (!flag_quiet)
   {
-    // is output sent to a color TTY, to a pager, or to /dev/null?
-
-    // check if standard output is a TTY
-    flag_tty_term = isatty(STDOUT_FILENO) != 0;
-
 #ifndef OS_WIN
 
+    // if not to a TTY, is output sent to a pager or to /dev/null?
     if (!flag_tty_term)
     {
       output_stat_result = fstat(STDOUT_FILENO, &output_stat) == 0;
@@ -7268,8 +7342,6 @@ void terminal()
   // whether to apply colors based on --tag, --query and --pretty
   if (flag_tag != NULL)
     flag_color = NULL;
-  else if ((flag_query || flag_pretty == Static::ALWAYS) && flag_color == Static::AUTO)
-    flag_color = Static::ALWAYS;
 
   if (!flag_quiet)
   {
@@ -7317,12 +7389,25 @@ void terminal()
       }
     }
 
-    // --tree: check UTF-8 terminal support
+    // --tree: check UTF-8 terminal support, this is a guess on LANG or LC_CTYPE or LC_ALL
     if (flag_tree && (flag_query || flag_files_with_matches || flag_files_without_match || flag_count))
     {
       const char *lang = getenv("LANG");
 
-      if (lang != NULL && strstr(lang, "UTF-8"))
+      if (lang == NULL || strstr(lang, "UTF-8") == NULL)
+      {
+        lang = getenv("LC_CTYPE");
+
+        if (lang == NULL || strstr(lang, "UTF-8") == NULL)
+        {
+          lang = getenv("LC_ALL");
+
+          if (lang == NULL || strstr(lang, "UTF-8") == NULL)
+            lang = NULL;
+        }
+      }
+
+      if (lang != NULL)
       {
         Output::Tree::bar = "│ ";
         Output::Tree::ptr = "╰╴";
@@ -7339,11 +7424,9 @@ void terminal()
       }
       else
       {
-        flag_color_term = flag_query;
-
 #ifdef OS_WIN
 
-        if (flag_tty_term || flag_query)
+        if (flag_tty_term)
         {
 #ifdef ENABLE_VIRTUAL_TERMINAL_PROCESSING
           // assume we have a color terminal on Windows if isatty() is true
@@ -7368,20 +7451,39 @@ void terminal()
         // check whether we have a color terminal
         if (flag_tty_term)
         {
-          const char *term;
-          if (getenv("COLORTERM") != NULL ||
-              ((term = getenv("TERM")) != NULL &&
-               (strstr(term, "ansi") != NULL ||
-                strstr(term, "xterm") != NULL ||
-                strstr(term, "screen") != NULL ||
-                strstr(term, "color") != NULL)))
-            flag_color_term = true;
+          const char *val;
+
+          // if NO_COLOR is unset
+          if ((val = getenv("NO_COLOR")) == NULL || *val == '\0')
+          {
+            // check COLORTERM or if TERM supports color
+            if (getenv("COLORTERM") != NULL)
+              flag_color_term = true;
+            else if ((val = getenv("TERM")) != NULL &&
+                (strstr(val, "ansi") != NULL ||
+                 strstr(val, "xterm") != NULL ||
+                 strstr(val, "screen") != NULL ||
+                 strstr(val, "color") != NULL))
+              flag_color_term = true;
+          }
         }
 
 #endif
 
-        if (!flag_color_term && flag_save_config == NULL && flag_color == Static::AUTO)
-          flag_color = NULL;
+        if (flag_query)
+        {
+          // --query: assume that a color terminal is used, save color to use with TUI output
+          if (flag_color_term || flag_color == Static::ALWAYS)
+            flag_color_query = flag_color;
+          flag_color = Static::ALWAYS;
+        }
+        else if (flag_color == Static::AUTO)
+        {
+          if (flag_pretty == Static::ALWAYS)
+            flag_color = Static::ALWAYS;
+          else if (!flag_color_term && flag_save_config == NULL)
+            flag_color = NULL;
+        }
 
         if (flag_color != NULL)
         {
@@ -7391,50 +7493,72 @@ void terminal()
           char *env_grep_colors = NULL;
           dupenv_s(&env_grep_colors, "GREP_COLORS");
           const char *grep_colors = env_grep_colors;
+          std::string deprecated_grep_colors;
 
-          // if GREP_COLOR is defined but not GREP_COLORS, use it to set mt= default value (overridden by GREP_COLORS mt=, ms=, mc=)
+          // if GREP_COLOR is defined but not GREP_COLORS, use it
           if (env_grep_colors == NULL && env_grep_color != NULL)
-            set_color(std::string("mt=").append(env_grep_color).c_str(), "mt=", color_mt);
+            grep_colors = env_grep_color;
           else if (grep_colors == NULL)
             grep_colors = DEFAULT_GREP_COLORS;
 
-          // parse GREP_COLORS
-          set_color(grep_colors, "sl=", color_sl); // selected line
-          set_color(grep_colors, "cx=", color_cx); // context line
-          set_color(grep_colors, "mt=", color_mt); // matched text in any line
-          set_color(grep_colors, "ms=", color_ms); // matched text in selected line
-          set_color(grep_colors, "mc=", color_mc); // matched text in a context line
-          set_color(grep_colors, "fn=", color_fn); // file name
-          set_color(grep_colors, "ln=", color_ln); // line number
-          set_color(grep_colors, "cn=", color_cn); // column number
-          set_color(grep_colors, "bn=", color_bn); // byte offset
-          set_color(grep_colors, "se=", color_se); // separator
+          // parse deprecated GREP_COLOR format with ANSI SGR codes for matched text only
+          if (grep_colors != NULL && strchr(grep_colors, '=') == NULL)
+          {
+            // use default colors then override matched text color with the specified color
+            deprecated_grep_colors.assign(grep_colors);
+            grep_colors = DEFAULT_GREP_COLORS;
+          }
 
-          set_color(grep_colors, "qp=", color_qp); // TUI prompt
-          set_color(grep_colors, "qe=", color_qe); // TUI errors
-          set_color(grep_colors, "qr=", color_qr); // TUI regex highlight
-          set_color(grep_colors, "qm=", color_qm); // TUI regex meta characters highlight
-          set_color(grep_colors, "ql=", color_ql); // TUI regex lists and literals highlight
-          set_color(grep_colors, "qb=", color_qb); // TUI regex braces highlight
+          // parse GREP_COLORS
+          if (grep_colors != NULL)
+          {
+            set_color(grep_colors, "sl=", color_sl); // selected line
+            set_color(grep_colors, "cx=", color_cx); // context line
+            set_color(grep_colors, "mt=", color_mt); // matched text in any line
+            set_color(grep_colors, "ms=", color_ms); // matched text in selected line
+            set_color(grep_colors, "mc=", color_mc); // matched text in a context line
+            set_color(grep_colors, "fn=", color_fn); // file name
+            set_color(grep_colors, "ln=", color_ln); // line number
+            set_color(grep_colors, "cn=", color_cn); // column number
+            set_color(grep_colors, "bn=", color_bn); // byte offset
+            set_color(grep_colors, "se=", color_se); // separator
+            set_color(grep_colors, "qp=", color_qp); // TUI prompt
+            set_color(grep_colors, "qe=", color_qe); // TUI errors
+            set_color(grep_colors, "qr=", color_qr); // TUI regex highlight
+            set_color(grep_colors, "qm=", color_qm); // TUI regex meta characters highlight
+            set_color(grep_colors, "ql=", color_ql); // TUI regex lists and literals highlight
+            set_color(grep_colors, "qb=", color_qb); // TUI regex braces highlight
+          }
+
+          // deprecated GREP_COLOR format with ANSI SGR codes for matched text only
+          if (!deprecated_grep_colors.empty())
+            set_color(deprecated_grep_colors.c_str(), "", color_ms);
 
           // parse --colors to override GREP_COLORS
-          set_color(flag_colors, "sl=", color_sl); // selected line
-          set_color(flag_colors, "cx=", color_cx); // context line
-          set_color(flag_colors, "mt=", color_mt); // matched text in any line
-          set_color(flag_colors, "ms=", color_ms); // matched text in selected line
-          set_color(flag_colors, "mc=", color_mc); // matched text in a context line
-          set_color(flag_colors, "fn=", color_fn); // file name
-          set_color(flag_colors, "ln=", color_ln); // line number
-          set_color(flag_colors, "cn=", color_cn); // column number
-          set_color(flag_colors, "bn=", color_bn); // byte offset
-          set_color(flag_colors, "se=", color_se); // separator
-
-          set_color(flag_colors, "qp=", color_qp); // TUI prompt
-          set_color(flag_colors, "qe=", color_qe); // TUI errors
-          set_color(flag_colors, "qr=", color_qr); // TUI regex highlight
-          set_color(flag_colors, "qm=", color_qm); // TUI regex meta characters highlight
-          set_color(flag_colors, "ql=", color_ql); // TUI regex lists and literals highlight
-          set_color(flag_colors, "qb=", color_qb); // TUI regex braces highlight
+          if (flag_colors != NULL && strchr(flag_colors, '=') == NULL)
+          {
+            // deprecated format with ANSI SGR codes only
+            set_color(flag_colors, "", color_mt); // matched text in any line
+          }
+          else if (flag_colors != NULL)
+          {
+            set_color(flag_colors, "sl=", color_sl); // selected line
+            set_color(flag_colors, "cx=", color_cx); // context line
+            set_color(flag_colors, "mt=", color_mt); // matched text in any line
+            set_color(flag_colors, "ms=", color_ms); // matched text in selected line
+            set_color(flag_colors, "mc=", color_mc); // matched text in a context line
+            set_color(flag_colors, "fn=", color_fn); // file name
+            set_color(flag_colors, "ln=", color_ln); // line number
+            set_color(flag_colors, "cn=", color_cn); // column number
+            set_color(flag_colors, "bn=", color_bn); // byte offset
+            set_color(flag_colors, "se=", color_se); // separator
+            set_color(flag_colors, "qp=", color_qp); // TUI prompt
+            set_color(flag_colors, "qe=", color_qe); // TUI errors
+            set_color(flag_colors, "qr=", color_qr); // TUI regex highlight
+            set_color(flag_colors, "qm=", color_qm); // TUI regex meta characters highlight
+            set_color(flag_colors, "ql=", color_ql); // TUI regex lists and literals highlight
+            set_color(flag_colors, "qb=", color_qb); // TUI regex braces highlight
+          }
 
           // -v: if rv in GREP_COLORS then swap the sl and cx colors (note that rv does not match color letters)
           if (flag_invert_match &&
@@ -7531,7 +7655,7 @@ void set_terminal_hyperlink()
 
       // get custom prefix in hyperlink or default file://
       const char *s = flag_hyperlink;
-      while (*s != '\0' && isalnum(*s))
+      while (*s != '\0' && isalnum(static_cast<unsigned char>(*s)))
         ++s;
 
       if (s == flag_hyperlink)
@@ -7841,7 +7965,7 @@ void ugrep()
 
   // add PATTERN to the CNF
   if (Static::arg_pattern != NULL)
-    Static::bcnf.new_pattern(CNF::PATTERN::NA, Static::arg_pattern);
+    Static::bcnf.new_pattern(CNF::PATTERN::ALT, Static::arg_pattern);
 
   // the regex compiled from PATTERN, -e PATTERN, -N PATTERN, and -f FILE
   std::string regex;
@@ -7915,9 +8039,6 @@ void ugrep()
   // -f: get patterns from file
   if (!flag_file.empty())
   {
-    bool line_regexp = flag_line_regexp;
-    bool word_regexp = flag_word_regexp;
-
     // -F: make newline-separated lines in regex literal with \Q and \E
     const char *Q = flag_fixed_strings ? "\\Q" : "";
     const char *E = flag_fixed_strings ? "\\E|" : flag_basic_regexp ? "\\|" : "|";
@@ -7928,11 +8049,6 @@ void ugrep()
       // -F does not apply to patterns in -f FILE when PATTERN or -e PATTERN is specified
       Q = "";
       E = flag_basic_regexp ? "\\|" : "|";
-
-      // -x and -w do not apply to patterns in -f FILE when PATTERN or -e PATTERN is specified
-      line_regexp = false;
-      word_regexp = false;
-
       regex.append(E);
     }
 
@@ -8019,10 +8135,11 @@ void ugrep()
         regex.pop_back();
     }
 
-    // -x or -w: if no PATTERN is specified, then apply -x or -w to all -f FILE patterns
+    // -x or -w: apply to all -f FILE patterns
     if (regex.empty())
     {
-      if (line_regexp)
+      // -x: empty regex matches empty lines with ^$
+      if (flag_line_regexp)
         regex.assign("^$");
     }
     else
@@ -8031,17 +8148,18 @@ void ugrep()
       const char *xleft = flag_basic_regexp ? "^\\(" : "^(?:";
       const char *xright = flag_basic_regexp ? "\\)$" : ")$";
 #if defined(HAVE_PCRE2)
-      const char *wleft = flag_basic_regexp ? "\\<\\(" : flag_perl_regexp ? "(?<!\\w)(?:" : "\\<(";
-      const char *wright = flag_basic_regexp ? "\\)\\>" : flag_perl_regexp ? ")(?!\\w)" : ")\\>";
+      // PCRE2_EXTRA_MATCH_WORD does not work and \b(?:regex)\b is not correct anyway, so we roll out our own
+      const char *wleft = flag_perl_regexp ? "(?<!\\w)(?:" : NULL;
+      const char *wright = flag_perl_regexp ? ")(?!\\w)" : NULL;
 #else // Boost.Regex
-      const char *wleft = flag_basic_regexp ? "\\<\\(" : flag_perl_regexp ? "(?<![[:word:]])(?:" : "\\<(";
-      const char *wright = flag_basic_regexp ? "\\)\\>" : flag_perl_regexp ? ")(?![[:word:]])" : ")\\>";
+      const char *wleft = flag_perl_regexp ? "(?<![[:word:]])(?:" : NULL;
+      const char *wright = flag_perl_regexp ? ")(?![[:word:]])" : NULL;
 #endif
 
-      if (line_regexp)
+      if (flag_line_regexp)
         regex.insert(0, xleft).append(xright); // make the regex line-anchored
-      else if (word_regexp)
-        regex.insert(0, wleft).append(wright); // make the regex word-anchored
+      else if (flag_word_regexp && wleft != NULL && wright != NULL)
+        regex.insert(0, wleft).append(wright); // make the regex word-anchored (or done with matcher option W)
     }
   }
 
@@ -8125,7 +8243,7 @@ void ugrep()
         while (++i < regex.size() && regex[i] != '}')
           continue;
       }
-      else if (isupper(regex[i]))
+      else if (isupper(static_cast<unsigned char>(regex[i])))
       {
         flag_ignore_case = false;
         break;
@@ -8180,6 +8298,9 @@ void ugrep()
     flag_format = NULL;
     flag_format_close = NULL;
     flag_format_end = NULL;
+
+    // disable sort, unnecessary
+    flag_sort_key = Sort::NA;
   }
 
   // -o and --format: enable -u to ungroup matches
@@ -8224,8 +8345,8 @@ void ugrep()
       flag_jobs = DEFAULT_MAX_JOBS;
   }
 
-  // --sort and --max-files: limit number of threads to --max-files to prevent unordered results, this is a special case
-  if (flag_sort_key != Sort::NA && flag_max_files > 0)
+  // --sort and --max-filea and not -l or -L or -c: limit number of threads to --max-files to prevent unordered results, this is a special case
+  if (flag_sort_key != Sort::NA && flag_max_files > 0 && !flag_files_with_matches && !flag_count)
     flag_jobs = std::min(flag_jobs, flag_max_files);
 
   // set the number of threads to the number of files or when recursing to the value of -J, --jobs
@@ -8278,7 +8399,7 @@ void ugrep()
   if (flag_empty)
     matcher_options.push_back('N');
 
-  // -w: match whole words, i.e. make \< and \> match only left side and right side of a word boundary, respectively
+  // -w: match whole words
   if (flag_word_regexp)
     matcher_options.push_back('W');
 
@@ -8305,6 +8426,8 @@ void ugrep()
       usage("options --index and -Z (--fuzzy) are not compatible");
     if (flag_invert_match)
       usage("options --index and -v (--invert-match) are not compatible");
+    if (flag_encoding != NULL)
+      usage("options --index and --encoding are not compatible");
 
     // -c and --index: force --min-count larger than 0, because indexed search skips non-matching files
     if (flag_count && flag_min_count == 0)
@@ -8321,7 +8444,7 @@ void ugrep()
       if (flag_invert_match)
         matcher_options.clear();
       else // -x and --match: only match empty lines (set LineMatcher option W)
-        matcher_options.push_back('W');
+        matcher_options.push_back('X');
 
       // do not invert when searching
       flag_invert_match = false;
@@ -8358,9 +8481,12 @@ void ugrep()
   {
     // -P: Perl matching with PCRE2 or Boost.Regex
 #if defined(HAVE_PCRE2)
-    // construct the PCRE2 JIT-optimized NFA-based Perl pattern matcher
+    // construct the PCRE2 JIT-optimized Perl pattern matcher
+    uint32_t options = flag_binary ? (PCRE2_NEVER_UTF | PCRE2_NEVER_UCP) : (PCRE2_UTF | PCRE2_UCP);
+    if (!Static::bcnf.singleton_or_undefined())
+      options |= PCRE2_DUPNAMES;
     Static::string_pattern.assign(flag_binary ? reflex::PCRE2Matcher::convert(regex, convert_flags, &flag_multiline) : reflex::PCRE2UTFMatcher::convert(regex, convert_flags, &flag_multiline));
-    Static::matcher = std::unique_ptr<reflex::AbstractMatcher>(new reflex::PCRE2Matcher(Static::string_pattern, reflex::Input(), matcher_options.c_str(), flag_binary ? (PCRE2_NEVER_UTF | PCRE2_NEVER_UCP) : (PCRE2_UTF | PCRE2_UCP)));
+    Static::matcher = std::unique_ptr<reflex::AbstractMatcher>(new reflex::PCRE2Matcher(Static::string_pattern, reflex::Input(), matcher_options.c_str(), options));
     Static::matchers.clear();
 
     if (!Static::bcnf.singleton_or_undefined())
@@ -8378,7 +8504,7 @@ void ugrep()
           if (j)
           {
             subregex.assign(pattern_options).append(*j);
-            submatchers.emplace_back(new reflex::PCRE2Matcher((flag_binary ? reflex::PCRE2Matcher::convert(subregex, convert_flags) : reflex::PCRE2UTFMatcher::convert(subregex, convert_flags)), reflex::Input(), matcher_options.c_str(), flag_binary ? (PCRE2_NEVER_UTF | PCRE2_NEVER_UCP) : (PCRE2_UTF | PCRE2_UCP)));
+            submatchers.emplace_back(new reflex::PCRE2Matcher((flag_binary ? reflex::PCRE2Matcher::convert(subregex, convert_flags) : reflex::PCRE2UTFMatcher::convert(subregex, convert_flags)), reflex::Input(), matcher_options.c_str(), options));
           }
           else
           {
@@ -8406,7 +8532,7 @@ void ugrep()
 #elif defined(HAVE_BOOST_REGEX)
     try
     {
-      // construct the Boost.Regex NFA-based Perl pattern matcher
+      // construct the Boost.Regex Perl pattern matcher
       Static::string_pattern.assign(reflex::BoostPerlMatcher::convert(regex, convert_flags, &flag_multiline));
       Static::matcher = std::unique_ptr<reflex::AbstractMatcher>(new reflex::BoostPerlMatcher(Static::string_pattern, reflex::Input(), matcher_options.c_str()));
       Static::matchers.clear();
@@ -9241,20 +9367,18 @@ void Grep::recurse(size_t level, const char *pathname)
 
 #else
 
-#ifdef HAVE_STATVFS
+#if defined(HAVE_STATVFS) || defined(HAVE_STATFS)
 
   if (!exclude_fs_ids.empty() || !include_fs_ids.empty())
   {
-    struct statvfs buf;
+    stat_fs_t buf;
 
-    if (statvfs(pathname, &buf) == 0)
+    if (stat_fs(pathname, &buf) == 0)
     {
-      uint64_t id = static_cast<uint64_t>(buf.f_fsid);
-
-      if (exclude_fs_ids.find(id) != exclude_fs_ids.end())
+      if (exclude_fs_ids.find(fsid_to_uint64(buf.f_fsid)) != exclude_fs_ids.end())
         return;
 
-      if (!include_fs_ids.empty() && include_fs_ids.find(id) == include_fs_ids.end())
+      if (!include_fs_ids.empty() && include_fs_ids.find(fsid_to_uint64(buf.f_fsid)) == include_fs_ids.end())
         return;
     }
   }
@@ -10060,11 +10184,15 @@ void Grep::search(const char *pathname, uint16_t cost)
       {
         // option -q, -l, or -L
 
-        // --format: whether to out.acquire() early before Stats::found_part()
-        bool acquire = flag_format != NULL && (flag_format_open != NULL || flag_format_close != NULL);
+        // --format with open/close or --max-files: we must out.acquire() lock before Stats::found_part()
+        bool acquire = (flag_format != NULL && (flag_format_open != NULL || flag_format_close != NULL)) || (!flag_quiet && flag_max_files > 0);
 
         bool heading = flag_with_filename;
         size_t lineno = 0;
+
+        // skip line number counting, only count matching lines
+        if (!flag_multiline && flag_max_line == 0 && flag_stats == NULL)
+          matcher->lineno_skip(true);
 
         while (matcher->find())
         {
@@ -10113,7 +10241,7 @@ void Grep::search(const char *pathname, uint16_t cost)
 
         if (matches > 0)
         {
-          // --format-open or format-close: we must acquire lock early before Stats::found_part()
+          // --format with open/close or --max-files: we must out.acquire() lock before Stats::found_part()
           if (acquire)
             out.acquire();
 
@@ -10151,8 +10279,8 @@ void Grep::search(const char *pathname, uint16_t cost)
       {
         // option -c
 
-        // --format: whether to out.acquire() early before Stats::found_part()
-        bool acquire = flag_format != NULL && (flag_format_open != NULL || flag_format_close != NULL);
+        // --format with open/close or --max-files: we must out.acquire() lock before Stats::found_part()
+        bool acquire = (flag_format != NULL && (flag_format_open != NULL || flag_format_close != NULL)) || flag_max_files > 0;
         bool heading = flag_with_filename;
 
         if (!flag_match || !flag_invert_match)
@@ -10160,6 +10288,10 @@ void Grep::search(const char *pathname, uint16_t cost)
           if (flag_ungroup || flag_only_matching)
           {
             // -co or -cu: count the number of patterns matched
+
+            // skip line number counting, only count matching lines
+            if (!flag_multiline && flag_max_line == 0 && flag_stats == NULL)
+              matcher->lineno_skip(true);
 
             while (matcher->find())
             {
@@ -10182,6 +10314,26 @@ void Grep::search(const char *pathname, uint16_t cost)
               // -m: max number of matches reached?
               if (flag_max_count > 0 && matches >= flag_max_count)
                 break;
+            }
+          }
+          else if (!flag_multiline && !flag_invert_match && flag_max_line == 0 && matchers == NULL && flag_stats == NULL)
+          {
+            // -c without -o/-u/-v/-K/-%: count the number of matching lines DO NOT KEEP LINE COUNT!
+
+            // skip line number counting, only count matching lines
+            matcher->lineno_skip(true);
+
+            while (matcher->find())
+            {
+              ++matches;
+
+              // -m: max number of matches reached?
+              if (flag_max_count > 0 && matches >= flag_max_count)
+                break;
+
+              // if the match does not span more than one line, then skip to end of the line (we count matching lines)
+              if (!matcher->at_bol())
+                matcher->skip('\n');
             }
           }
           else
@@ -10246,7 +10398,7 @@ void Grep::search(const char *pathname, uint16_t cost)
         }
         else
         {
-          // --format-open or --format-close: we must acquire lock early before Stats::found_part()
+          // --format with open/close or --max-files: we must out.acquire() lock before Stats::found_part()
           if (acquire)
             out.acquire();
 
@@ -10291,7 +10443,7 @@ void Grep::search(const char *pathname, uint16_t cost)
       {
         // option --format
 
-        // whether to out.acquire() early before Stats::found_part()
+        // --format with open/close: we must out.acquire() lock before Stats::found_part()
         bool acquire = flag_format_open != NULL || flag_format_close != NULL;
         bool heading = flag_with_filename;
 
@@ -10473,6 +10625,10 @@ void Grep::search(const char *pathname, uint16_t cost)
         bool binary = false;
         bool nl = false;
 
+        // skip line number counting, only count matching lines
+        if (!flag_line_number && !flag_multiline && flag_max_line == 0 && flag_stats == NULL)
+          matcher->lineno_skip(true);
+
         while (matcher->find())
         {
           const char *begin = matcher->begin();
@@ -10604,33 +10760,36 @@ void Grep::search(const char *pathname, uint16_t cost)
           }
           else
           {
-            // echo multi-line matches line-by-line
-
-            const char *from = begin;
-            const char *to;
-
-            while ((to = static_cast<const char*>(memchr(from, '\n', size - (from - begin)))) != NULL)
+            if (flag_multiline)
             {
-              out.str(match_ms);
-              out.str(from, to - from);
-              out.str(match_off);
-              out.chr('\n');
+              // echo multi-line matches line-by-line
+              const char *from = begin;
+              const char *to;
 
-              out.header(pathname, partname, heading, ++lineno, NULL, matcher->first() + (to - begin) + 1, flag_separator_bar, false);
+              while ((to = static_cast<const char*>(memchr(from, '\n', size - (from - begin)))) != NULL)
+              {
+                out.str(match_ms);
+                out.str(from, to - from);
+                out.str(match_off);
+                out.chr('\n');
 
-              from = to + 1;
+                out.header(pathname, partname, heading, ++lineno, NULL, matcher->first() + (to - begin) + 1, flag_separator_bar, false);
+
+                from = to + 1;
+              }
+
+              size -= from - begin;
+              begin = from;
             }
-
-            size -= from - begin;
 
             if (size > 0)
             {
-              bool lf_only = from[size - 1] == '\n';
+              bool lf_only = begin[size - 1] == '\n';
               size -= lf_only;
               if (size > 0)
               {
                 out.str(match_ms);
-                out.str(from, size);
+                out.str(begin, size);
                 out.str(match_off);
               }
               out.nl(lf_only);
@@ -10665,6 +10824,10 @@ void Grep::search(const char *pathname, uint16_t cost)
         bool binary = false;
         bool nl = false;
         bool stop = false;
+
+        // skip line number counting, only count matching lines
+        if (!flag_line_number && !flag_multiline && flag_max_line == 0 && flag_stats == NULL)
+          matcher->lineno_skip(true);
 
         // construct event handler functor with captured *this and some of the locals
         GrepHandler handler(*this, pathname, lineno, heading, binfile, hex, binary, matches, stop);
@@ -10944,33 +11107,36 @@ void Grep::search(const char *pathname, uint16_t cost)
           }
           else
           {
-            // echo multi-line matches line-by-line
-
-            const char *from = begin;
-            const char *to;
-
-            while ((to = static_cast<const char*>(memchr(from, '\n', size - (from - begin)))) != NULL)
+            if (flag_multiline)
             {
-              out.str(match_ms);
-              out.str(from, to - from);
-              out.str(match_off);
-              out.chr('\n');
+              // echo multi-line matches line-by-line
+              const char *from = begin;
+              const char *to;
 
-              out.header(pathname, partname, heading, ++lineno, NULL, matcher->first() + (to - begin) + 1, flag_separator_bar, false);
+              while ((to = static_cast<const char*>(memchr(from, '\n', size - (from - begin)))) != NULL)
+              {
+                out.str(match_ms);
+                out.str(from, to - from);
+                out.str(match_off);
+                out.chr('\n');
 
-              from = to + 1;
+                out.header(pathname, partname, heading, ++lineno, NULL, matcher->first() + (to - begin) + 1, flag_separator_bar, false);
+
+                from = to + 1;
+              }
+
+              size -= from - begin;
+              begin = from;
             }
-
-            size -= from - begin;
 
             if (size > 0)
             {
-              bool lf_only = from[size - 1] == '\n';
+              bool lf_only = begin[size - 1] == '\n';
               size -= lf_only;
               if (size > 0)
               {
                 out.str(match_ms);
-                out.str(from, size);
+                out.str(begin, size);
                 out.str(match_off);
               }
               out.nl(lf_only);
@@ -11036,6 +11202,10 @@ void Grep::search(const char *pathname, uint16_t cost)
         bool binary = false;
         bool stop = false;
         bool colorize = flag_color != NULL || flag_replace != NULL || flag_tag != NULL;
+
+        // skip line number counting, only count matching lines
+        if (!flag_line_number && !flag_multiline && flag_max_line == 0 && flag_stats == NULL)
+          matcher->lineno_skip(true);
 
         // construct event handler functor with captured *this and some of the locals
         GrepHandler handler(*this, pathname, lineno, heading, binfile, hex, binary, matches, stop);
@@ -11215,25 +11385,27 @@ void Grep::search(const char *pathname, uint16_t cost)
               }
               else
               {
-                // echo multi-line matches line-by-line
-
-                const char *from = begin;
-                const char *to;
-
-                while ((to = static_cast<const char*>(memchr(from, '\n', size - (from - begin)))) != NULL)
+                if (flag_multiline)
                 {
-                  out.str(match_ms);
-                  out.str(from, to - from);
-                  out.str(match_off);
-                  out.chr('\n');
+                  // echo multi-line matches line-by-line
+                  const char *from = begin;
+                  const char *to;
 
-                  out.header(pathname, partname, heading, ++lineno, NULL, first + (to - begin) + 1, flag_separator_bar, false);
+                  while ((to = static_cast<const char*>(memchr(from, '\n', size - (from - begin)))) != NULL)
+                  {
+                    out.str(match_ms);
+                    out.str(from, to - from);
+                    out.str(match_off);
+                    out.chr('\n');
 
-                  from = to + 1;
+                    out.header(pathname, partname, heading, ++lineno, NULL, first + (to - begin) + 1, flag_separator_bar, false);
+
+                    from = to + 1;
+                  }
+
+                  size -= from - begin;
+                  begin = from;
                 }
-
-                size -= from - begin;
-                begin = from;
 
                 out.str(match_ms);
                 out.str(begin, size);
@@ -11790,25 +11962,27 @@ void Grep::search(const char *pathname, uint16_t cost)
               }
               else
               {
-                // echo multi-line matches line-by-line
-
-                const char *from = begin;
-                const char *to;
-
-                while ((to = static_cast<const char*>(memchr(from, '\n', size - (from - begin)))) != NULL)
+                if (flag_multiline)
                 {
-                  out.str(v_match_ms);
-                  out.str(from, to - from);
-                  out.str(match_off);
-                  out.chr('\n');
+                  // echo multi-line matches line-by-line
+                  const char *from = begin;
+                  const char *to;
 
-                  out.header(pathname, partname, heading, ++lineno, NULL, first + (to - begin) + 1, flag_separator_bar, false);
+                  while ((to = static_cast<const char*>(memchr(from, '\n', size - (from - begin)))) != NULL)
+                  {
+                    out.str(v_match_ms);
+                    out.str(from, to - from);
+                    out.str(match_off);
+                    out.chr('\n');
 
-                  from = to + 1;
+                    out.header(pathname, partname, heading, ++lineno, NULL, first + (to - begin) + 1, flag_separator_bar, false);
+
+                    from = to + 1;
+                  }
+
+                  size -= from - begin;
+                  begin = from;
                 }
-
-                size -= from - begin;
-                begin = from;
 
                 out.str(v_match_ms);
                 out.str(begin, size);
@@ -12243,25 +12417,27 @@ void Grep::search(const char *pathname, uint16_t cost)
               }
               else
               {
-                // echo multi-line matches line-by-line
-
-                const char *from = begin;
-                const char *to;
-
-                while ((to = static_cast<const char*>(memchr(from, '\n', size - (from - begin)))) != NULL)
+                if (flag_multiline)
                 {
-                  out.str(match_ms);
-                  out.str(from, to - from);
-                  out.str(match_off);
-                  out.chr('\n');
+                  // echo multi-line matches line-by-line
+                  const char *from = begin;
+                  const char *to;
 
-                  out.header(pathname, partname, heading, ++lineno, NULL, first + (to - begin) + 1, flag_separator_bar, false);
+                  while ((to = static_cast<const char*>(memchr(from, '\n', size - (from - begin)))) != NULL)
+                  {
+                    out.str(match_ms);
+                    out.str(from, to - from);
+                    out.str(match_off);
+                    out.chr('\n');
 
-                  from = to + 1;
+                    out.header(pathname, partname, heading, ++lineno, NULL, first + (to - begin) + 1, flag_separator_bar, false);
+
+                    from = to + 1;
+                  }
+
+                  size -= from - begin;
+                  begin = from;
                 }
-
-                size -= from - begin;
-                begin = from;
 
                 out.str(match_ms);
                 out.str(begin, size);
@@ -13055,7 +13231,8 @@ done_search:
       if (flag_break && (matches > 0 || flag_any_line) && !flag_quiet && !flag_files_with_matches && !flag_count && flag_format == NULL)
         out.nl();
 
-      Stats::score_matches(matches, matcher->lineno() > 0 ? matcher->lineno() - 1 : 0);
+      if (flag_stats != NULL)
+        Stats::score_matches(matches, matcher->lineno() > 0 ? matcher->lineno() - 1 : 0);
     }
 
     catch (EXIT_SEARCH&)
@@ -13240,7 +13417,7 @@ void trim(std::string& line)
   size_t len = line.length();
   size_t pos;
 
-  for (pos = 0; pos < len && isspace(line.at(pos)); ++pos)
+  for (pos = 0; pos < len && isspace(static_cast<unsigned char>(line.at(pos))); ++pos)
     continue;
 
   if (pos > 0)
@@ -13248,7 +13425,7 @@ void trim(std::string& line)
 
   len -= pos;
 
-  for (pos = len; pos > 0 && isspace(line.at(pos - 1)); --pos)
+  for (pos = len; pos > 0 && isspace(static_cast<unsigned char>(line.at(pos - 1))); --pos)
     continue;
 
   if (len > pos)
@@ -13275,160 +13452,157 @@ void trim_pathname_arg(const char *arg)
 // convert GREP_COLORS and set the color substring to the ANSI SGR codes
 void set_color(const char *colors, const char *parameter, char color[COLORLEN])
 {
-  if (colors != NULL)
-  {
-    const char *s = strstr(colors, parameter);
+  const char *s = strstr(colors, parameter);
 
-    // check if substring parameter is present in colors
-    if (s != NULL)
-    {
-      s += 3;
-      char *t = color + 2;
+  // check if substring parameter is present in colors
+  if (s != NULL)
+  {
+    s += strlen(parameter);
+    char *t = color + 2;
 
 #ifdef WITH_EASY_GREP_COLORS
 
-      // foreground colors: k=black, r=red, g=green, y=yellow b=blue, m=magenta, c=cyan, w=white
-      // background colors: K=black, R=red, G=green, Y=yellow B=blue, M=magenta, C=cyan, W=white
-      // bright colors: +k, +r, +g, +y, +b, +m, +c, +w, +K, +R, +G, +Y, +B, +M, +C, +W
-      // modifiers: h=highlight, u=underline, i=invert, f=faint, n=normal, H=highlight off, U=underline off, I=invert off
-      // semicolons are not required and abbreviations can be mixed with numeric ANSI SGR codes
+    // foreground colors: k=black, r=red, g=green, y=yellow b=blue, m=magenta, c=cyan, w=white
+    // background colors: K=black, R=red, G=green, Y=yellow B=blue, M=magenta, C=cyan, W=white
+    // bright colors: +k, +r, +g, +y, +b, +m, +c, +w, +K, +R, +G, +Y, +B, +M, +C, +W
+    // modifiers: h=highlight, u=underline, i=invert, f=faint, n=normal, H=highlight off, U=underline off, I=invert off
+    // semicolons are not required and abbreviations can be mixed with numeric ANSI SGR codes
 
-      uint8_t offset = 30;
-      bool sep = false;
+    uint8_t offset = 30;
+    bool sep = false;
 
-      while (*s != '\0' && *s != ':' && t - color < COLORLEN - 6)
+    while (*s != '\0' && *s != ':' && t - color < COLORLEN - 6)
+    {
+      if (isdigit(static_cast<unsigned char>(*s)))
       {
-        if (isdigit(*s))
+        if (sep)
+          *t++ = ';';
+        if (offset == 90)
         {
-          if (sep)
-            *t++ = ';';
-          if (offset == 90)
-          {
-            *t++ = '1';
-            *t++ = ';';
-            offset = 30;
-          }
-          *t++ = *s++;
-          while (isdigit(*s) && t - color < COLORLEN - 2)
-            *t++ = *s++;
-          sep = true;
-          continue;
-        }
-
-        if (*s == '+')
-        {
-          offset = 90;
-        }
-        else if (*s == 'n')
-        {
-          if (sep)
-            *t++ = ';';
-          *t++ = '0';
-          sep = true;
-        }
-        else if (*s == 'h')
-        {
-          if (sep)
-            *t++ = ';';
           *t++ = '1';
-          sep = true;
-        }
-        else if (*s == 'H')
-        {
-          if (sep)
-            *t++ = ';';
-          *t++ = '2';
-          *t++ = '1';
+          *t++ = ';';
           offset = 30;
-          sep = true;
         }
-        else if (*s == 'f')
-        {
-          if (sep)
-            *t++ = ';';
-          *t++ = '2';
-          sep = true;
-        }
-        else if (*s == 'u')
-        {
-          if (sep)
-            *t++ = ';';
-          *t++ = '4';
-          sep = true;
-        }
-        else if (*s == 'U')
-        {
-          if (sep)
-            *t++ = ';';
-          *t++ = '2';
-          *t++ = '4';
-          sep = true;
-        }
-        else if (*s == 'i')
-        {
-          if (sep)
-            *t++ = ';';
-          *t++ = '7';
-          sep = true;
-        }
-        else if (*s == 'I')
-        {
-          if (sep)
-            *t++ = ';';
-          *t++ = '2';
-          *t++ = '7';
-          sep = true;
-        }
-        else if (*s == ',' || *s == ';' || isspace(*s))
-        {
-          if (sep)
-            *t++ = ';';
-          sep = false;
-        }
-        else
-        {
-          const char *c = "krgybmcw  KRGYBMCW";
-          const char *k = strchr(c, *s);
-
-          if (k != NULL)
-          {
-            if (sep)
-              *t++ = ';';
-            uint8_t n = offset + static_cast<uint8_t>(k - c);
-            if (n >= 100)
-            {
-              *t++ = '1';
-              n -= 100;
-            }
-            *t++ = '0' + n / 10;
-            *t++ = '0' + n % 10;
-            offset = 30;
-            sep = true;
-          }
-        }
-
-        ++s;
+        *t++ = *s++;
+        while (isdigit(static_cast<unsigned char>(*s)) && t - color < COLORLEN - 2)
+          *t++ = *s++;
+        sep = true;
+        continue;
       }
 
-#else
-
-      // traditional grep SGR parameters
-      while ((*s == ';' || isdigit(*s)) && t - color < COLORLEN - 2)
-        *t++ = *s++;
-
-#endif
-
-      if (t > color + 2)
+      if (*s == '+')
       {
-        color[0] = '\033';
-        color[1] = '[';
-        *t++ = 'm';
-        *t++ = '\0';
+        offset = 90;
+      }
+      else if (*s == 'n')
+      {
+        if (sep)
+          *t++ = ';';
+        *t++ = '0';
+        sep = true;
+      }
+      else if (*s == 'h')
+      {
+        if (sep)
+          *t++ = ';';
+        *t++ = '1';
+        sep = true;
+      }
+      else if (*s == 'H')
+      {
+        if (sep)
+          *t++ = ';';
+        *t++ = '2';
+        *t++ = '1';
+        offset = 30;
+        sep = true;
+      }
+      else if (*s == 'f')
+      {
+        if (sep)
+          *t++ = ';';
+        *t++ = '2';
+        sep = true;
+      }
+      else if (*s == 'u')
+      {
+        if (sep)
+          *t++ = ';';
+        *t++ = '4';
+        sep = true;
+      }
+      else if (*s == 'U')
+      {
+        if (sep)
+          *t++ = ';';
+        *t++ = '2';
+        *t++ = '4';
+        sep = true;
+      }
+      else if (*s == 'i')
+      {
+        if (sep)
+          *t++ = ';';
+        *t++ = '7';
+        sep = true;
+      }
+      else if (*s == 'I')
+      {
+        if (sep)
+          *t++ = ';';
+        *t++ = '2';
+        *t++ = '7';
+        sep = true;
+      }
+      else if (*s == ',' || *s == ';' || isspace(static_cast<unsigned char>(*s)))
+      {
+        if (sep)
+          *t++ = ';';
+        sep = false;
       }
       else
       {
-        color[0] = '\0';
+        const char *c = "krgybmcw  KRGYBMCW";
+        const char *k = strchr(c, *s);
+
+        if (k != NULL)
+        {
+          if (sep)
+            *t++ = ';';
+          uint8_t n = offset + static_cast<uint8_t>(k - c);
+          if (n >= 100)
+          {
+            *t++ = '1';
+            n -= 100;
+          }
+          *t++ = '0' + n / 10;
+          *t++ = '0' + n % 10;
+          offset = 30;
+          sep = true;
+        }
       }
+
+      ++s;
+    }
+
+#else
+
+    // traditional grep SGR parameters
+    while ((*s == ';' || isdigit(static_cast<unsigned char>(*s))) && t - color < COLORLEN - 2)
+      *t++ = *s++;
+
+#endif
+
+    if (t > color + 2)
+    {
+      color[0] = '\033';
+      color[1] = '[';
+      *t++ = 'm';
+      *t++ = '\0';
+    }
+    else
+    {
+      color[0] = '\0';
     }
   }
 }
@@ -13574,7 +13748,7 @@ void usage(const char *message, const char *arg, const char *valid)
       }
       else
       {
-        while (*e != '\0' && (*e == '-' || isalpha(*e)))
+        while (*e != '\0' && (*e == '-' || isalpha(static_cast<unsigned char>(*e))))
           ++e;
         std::cerr << std::string(s, e - s) << "'" << std::endl;
       }
@@ -13681,8 +13855,7 @@ void help(std::ostream& out)
             If -o or -u is specified, counts the number of patterns matched.\n\
             If -v is specified, counts the number of non-matching lines.  If\n\
             -m1, (with a comma or --min-count=1) is specified, counts only\n\
-            matching files without outputting zero matches.  If --tree is\n\
-            specified, outputs directories in a tree-like format.\n\
+            matching files without outputting zero matches.\n\
     --color[=WHEN], --colour[=WHEN]\n\
             Mark up the matching text with the colors specified with option\n\
             --colors or the GREP_COLOR or GREP_COLORS environment variable.\n\
@@ -13714,8 +13887,8 @@ void help(std::ostream& out)
             unless --config=FILE or --no-config is specified.\n\
     --no-config\n\
             Do not automatically load the default .ugrep configuration file.\n\
-    --confirm\n\
-            Confirm actions in -Q query TUI.  The default is confirm.\n\
+    --no-confirm\n\
+            Do not confirm actions in -Q query TUI.  The default is confirm.\n\
     --cpp\n\
             Output file matches in C++.  See also options --format and -u.\n\
     --csv\n\
@@ -13751,11 +13924,10 @@ void help(std::ostream& out)
             the default.\n\
     -e PATTERN, --regexp=PATTERN\n\
             Specify a PATTERN to search the input.  An input line is selected\n\
-            if it matches any of the specified patterns.  Note that longer\n\
-            patterns take precedence over shorter patterns.  This option is\n\
-            most useful when multiple -e options are used to specify multiple\n\
-            patterns, when a pattern begins with a dash (`-'), to specify a\n\
-            pattern after option -f or after the FILE arguments.\n\
+            if it matches any of the specified patterns.  This option is useful\n\
+            when multiple -e options are used to specify multiple patterns, or\n\
+            when a pattern begins with a dash (`-'), or to specify a pattern\n\
+            after option -f or after the FILE arguments.\n\
     --encoding=ENCODING\n\
             The encoding format of the input.  The default ENCODING is binary\n\
             and UTF-8 which are the same.  Note that option -U specifies binary\n\
@@ -13811,7 +13983,7 @@ void help(std::ostream& out)
             search targets, i.e. excludes all other file systems.  Note that\n\
             --exclude-fs=MOUNTS take priority over --include-fs=MOUNTS.  This\n\
             option may be repeated.\n"
-#ifndef HAVE_STATVFS
+#if !defined(HAVE_STATVFS) && !defined(HAVE_STATFS)
             "\
             This option is not available in this build configuration of ugrep.\n"
 #endif
@@ -13981,7 +14153,7 @@ void help(std::ostream& out)
             recursive searches to the file system of the working directory,\n\
             same as --include-fs=. (dot). Note that --exclude-fs=MOUNTS take\n\
             priority over --include-fs=MOUNTS.  This option may be repeated.\n"
-#ifndef HAVE_STATVFS
+#if !defined(HAVE_STATVFS) && !defined(HAVE_STATFS)
             "\
             This option is not available in this build configuration of ugrep.\n"
 #endif
@@ -14019,15 +14191,13 @@ void help(std::ostream& out)
             Only the names of files not containing selected lines are written\n\
             to standard output.  Pathnames are listed once per file searched.\n\
             If the standard input is searched, the string ``(standard input)''\n\
-            is written.  If --tree is specified, outputs directories in a\n\
-            tree-like format.\n\
+            is written.\n\
     -l, --files-with-matches\n\
             Only the names of files containing selected lines are written to\n\
             standard output.  ugrep will only search a file until a match has\n\
             been found, making searches potentially less expensive.  Pathnames\n\
             are listed once per file searched.  If the standard input is\n\
-            searched, the string ``(standard input)'' is written.  If --tree is\n\
-            specified, outputs directories in a tree-like format.\n\
+            searched, the string ``(standard input)'' is written.\n\
     --label=LABEL\n\
             Displays the LABEL value when input is read from standard input\n\
             where a file name would normally be printed in the output.\n\
@@ -14138,7 +14308,7 @@ void help(std::ostream& out)
             Press Enter to select lines to output.  Press ALT-l for option -l\n\
             to list files, ALT-n for -n, etc.  Non-option commands include\n\
             ALT-] to increase context and ALT-} to increase fuzzyness.  See\n\
-            also options --confirm, --delay, --split and --view.\n\
+            also options --no-confirm, --delay, --split and --view.\n\
     -q, --quiet, --silent\n\
             Quiet mode: suppress all output.  Only search a file until a match\n\
             has been found.\n\
@@ -14217,9 +14387,10 @@ void help(std::ostream& out)
             Disables colors to mark up matches with TAG.  END marks the end of\n\
             a match if specified, otherwise TAG.  The default is `___'.\n\
     --tree, -^\n\
-            Output directories with matching files in a tree-like format when\n\
-            options -c, -l or -L are used.  This option is enabled by --pretty\n\
-            when the output is sent to a terminal.\n\
+            Output directories with matching files in a tree-like format for\n\
+            option -c or --count, -l or --files-with-matches, -L or\n\
+            --files-without-match.  This option is enabled by --pretty when the\n\
+            output is sent to a terminal.\n\
     -U, --ascii, --binary\n\
             Disables Unicode matching for ASCII and binary matching.  PATTERN\n\
             matches bytes, not Unicode characters.  For example, -U '\\xa3'\n\
@@ -14243,12 +14414,8 @@ void help(std::ostream& out)
     -w, --word-regexp\n\
             The PATTERN is searched for as a word, such that the matching text\n\
             is preceded by a non-word character and is followed by a non-word\n\
-            character.  Word characters are letters, digits and the\n\
-            underscore.  With option -P, word characters are Unicode letters,\n\
-            digits and underscore.  This option has no effect if -x is also\n\
-            specified.  If a PATTERN is specified, or -e PATTERN or -N PATTERN,\n\
-            then this option has no effect on -f FILE patterns to allow -f FILE\n\
-            patterns to narrow or widen the scope of the PATTERN search.\n\
+            character.  Word-like characters are Unicode letters, digits and\n\
+            connector punctuations such as underscore.\n\
     --width[=NUM]\n\
             Truncate the output to NUM visible characters per line.  The width\n\
             of the terminal window is used if NUM is not specified.  Note that\n\
@@ -14259,10 +14426,7 @@ void help(std::ostream& out)
             line from the hex output use option --hexdump.  See also option -U.\n\
     -x, --line-regexp\n\
             Select only those matches that exactly match the whole line, as if\n\
-            the patterns are surrounded by ^ and $.  If a PATTERN is specified,\n\
-            or -e PATTERN or -N PATTERN, then this option has no effect on\n\
-            -f FILE patterns to allow -f FILE patterns to narrow or widen the\n\
-            scope of the PATTERN search.\n\
+            the patterns are surrounded by ^ and $.\n\
     --xml\n\
             Output file matches in XML.  If -H, -n, -k, or -b is specified,\n\
             additional values are output.  See also options --format and -u.\n\
@@ -14369,11 +14533,17 @@ void help(std::ostream& out)
 // print a helpful information for WHAT, if specified, and exit
 void help(const char *what)
 {
+  // strip = from =WHAT
   if (what != NULL && *what == '=')
     ++what;
 
+  // strip --no from --no-WHAT
   if (what != NULL && strncmp(what, "--no", 4) == 0)
     what += 4;
+
+  // strip one dash from --WHAT
+  if (what != NULL && strncmp(what, "--", 2) == 0)
+    ++what;
 
   if (what == NULL || *what == '\0')
   {
@@ -14412,7 +14582,7 @@ void help(const char *what)
             if (((what[j] ^ str.at(i + j)) & ~0x20) != 0)
               break;
 
-          if (what[j] == '\0' || what[j] == '=' || isspace(what[j]))
+          if (what[j] == '\0' || what[j] == '=' || isspace(static_cast<unsigned char>(what[j])))
           {
             if (pass == 0 ? i < nl: i > nl)
             {
@@ -14747,6 +14917,10 @@ void version()
 #ifdef HAVE_LIBBZIP3
     ",bzip3" <<
 #endif
+#ifndef WITH_NO_7ZIP
+    ",7z" <<
+#endif
+    ",tar/pax/cpio/zip" <<
 #endif
     "\n"
     "License: BSD-3-Clause; ugrep user manual: <https://ugrep.com>\n"

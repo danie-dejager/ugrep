@@ -54,9 +54,6 @@
 #include <bitset>
 #include <vector>
 
-// ugrep 3.7: use vectors instead of sets to store positions to compile DFAs
-#define WITH_VECTOR
-
 // ugrep 3.7.0a: use a map to construct fixed string pattern trees
 // #define WITH_TREE_MAP
 // ugrep 3.7.0b: use a DFA as a tree to bypass DFA construction step when possible
@@ -358,28 +355,28 @@ class Pattern {
     return ams_;
   }
   /// Returns true when match is predicted, based on s[0..3..e-1] (e >= s + 4).
-  static inline bool predict_match(const Pred pmh[], const char *s, size_t n)
+  inline bool predict_match(const char *s, size_t n) const
   {
     Hash h = static_cast<uint8_t>(*s);
-    Pred f = pmh[h] & 1;
+    Pred f = pmh_[h] & 1;
     h = hash(h, static_cast<uint8_t>(*++s));
-    f |= pmh[h] & 2;
+    f |= pmh_[h] & 2;
     h = hash(h, static_cast<uint8_t>(*++s));
-    f |= pmh[h] & 4;
+    f |= pmh_[h] & 4;
     h = hash(h, static_cast<uint8_t>(*++s));
-    f |= pmh[h] & 8;
-    Pred m = 16;
+    f |= pmh_[h] & 8;
     const char *e = s + n - 3;
+    Pred m = 16;
     while (f == 0 && ++s < e)
     {
       h = hash(h, static_cast<uint8_t>(*s));
-      f = pmh[h] & m;
+      f = pmh_[h] & m;
       m <<= 1;
     }
     return f == 0;
   }
-  /// Returns zero when match is predicted (removed shift distance return, now just returns 0 or 1).
-  static inline size_t predict_match(const Pred pma[], const char *s)
+  /// Returns true when match is predicted using my PM4 logic.
+  inline bool predict_match(const char *s) const
   {
     uint8_t b0 = s[0];
     uint8_t b1 = s[1];
@@ -388,13 +385,9 @@ class Pattern {
     Hash h1 = hash(b0, b1);
     Hash h2 = hash(h1, b2);
     Hash h3 = hash(h2, b3);
-    Pred a0 = pma[b0];
-    Pred a1 = pma[h1];
-    Pred a2 = pma[h2];
-    Pred a3 = pma[h3];
-    Pred p = (a0 & 0xc0) | (a1 & 0x30) | (a2 & 0x0c) | (a3 & 0x03);
+    Pred p = (pma_[b0] & 0xc0) | (pma_[h1] & 0x30) | (pma_[h2] & 0x0c) | (pma_[h3] & 0x03);
     Pred m = ((((((p >> 2) | p) >> 2) | p) >> 1) | p);
-    return m == 0xff;
+    return m != 0xff;
   }
   /// Relative frequency of English letters with upper/lower-case ratio = 0.0563, punctuation and UTF-8 bytes.
   static uint8_t frequency(uint8_t c)
@@ -503,7 +496,7 @@ class Pattern {
     static const value_type RES3    = 1ULL << 50; ///< reserved
     static const value_type NEGATE  = 1ULL << 51; ///< marks negative patterns
     static const value_type TICKED  = 1ULL << 52; ///< marks lookahead ending ) in (?=X)
-    static const value_type GREEDY  = 1ULL << 53; ///< force greedy quants
+    static const value_type RES4    = 1ULL << 53; ///< reserved
     static const value_type ANCHOR  = 1ULL << 54; ///< marks begin of word (\b,\<,\>) and buffer (\A,^) anchors
     static const value_type ACCEPT  = 1ULL << 55; ///< accept, not a regex position
     Position()                   : k(NPOS) { }
@@ -514,7 +507,6 @@ class Pattern {
     Position iter(Iter i)            const { return Position(k + (static_cast<value_type>(i) << 32)); }
     Position negate(bool b)          const { return b ? Position(k | NEGATE) : Position(k & ~NEGATE); }
     Position ticked(bool b)          const { return b ? Position(k | TICKED) : Position(k & ~TICKED); }
-    Position greedy(bool b)          const { return b ? Position(k | GREEDY) : Position(k & ~GREEDY); }
     Position anchor(bool b)          const { return b ? Position(k | ANCHOR) : Position(k & ~ANCHOR); }
     Position accept(bool b)          const { return b ? Position(k | ACCEPT) : Position(k & ~ACCEPT); }
     Position lazy(Lazy l)            const { return Position((k & 0x00FFFFFFFFFFFFFFULL) | static_cast<value_type>(l) << 56); }
@@ -524,30 +516,20 @@ class Pattern {
     Iter     iter()                  const { return static_cast<Index>((k >> 32) & 0xFFFF); }
     bool     negate()                const { return (k & NEGATE) != 0; }
     bool     ticked()                const { return (k & TICKED) != 0; }
-    bool     greedy()                const { return (k & GREEDY) != 0; }
     bool     anchor()                const { return (k & ANCHOR) != 0; }
     bool     accept()                const { return (k & ACCEPT) != 0; }
     Lazy     lazy()                  const { return static_cast<Lazy>(k >> 56); }
     value_type k;
   };
-  typedef std::vector<Lazy>            Lazyset;
-#ifdef WITH_VECTOR
+  typedef std::vector<Position>        Lazypos;
   typedef std::vector<Position>        Positions;
-#else
-  typedef std::set<Position>           Positions;
-#endif
   typedef std::map<Position,Positions> Follow;
   typedef std::pair<Chars,Positions>   Move;
   typedef std::list<Move>              Moves;
-#ifdef WITH_VECTOR
   inline static void pos_insert(Positions& s1, const Positions& s2) { s1.insert(s1.end(), s2.begin(), s2.end()); }
   inline static void pos_add(Positions& s, const Position& e) { s.insert(s.end(), e); }
-#else
-  inline static void pos_insert(Positions& s1, const Positions& s2) { s1.insert(s2.begin(), s2.end()); }
-  inline static void pos_add(Positions& s, const Position& e) { s.insert(e); }
-#endif
-  inline static void lazy_insert(Lazyset& s1, const Lazyset& s2) { s1.insert(s1.end(), s2.begin(), s2.end()); }
-  inline static void lazy_add(Lazyset& s, const Lazy& e) { s.insert(s.end(), e); }
+  inline static void lazy_insert(Lazypos& s1, const Lazypos& s2) { s1.insert(s1.end(), s2.begin(), s2.end()); }
+  inline static void lazy_add(Lazypos& s, const Lazy i, Location p) { s.insert(s.end(), Position(p).lazy(i)); }
 #ifndef WITH_TREE_DFA
   /// Tree DFA constructed from string patterns.
   struct Tree {
@@ -859,6 +841,7 @@ class Pattern {
   void parse(
       Positions& startpos,
       Follow&    followpos,
+      Lazypos&   lazypos,
       Mods       modifiers,
       Map&       lookahead);
   void parse1(
@@ -869,7 +852,7 @@ class Pattern {
       bool&      nullable,
       Follow&    followpos,
       Lazy&      lazyidx,
-      Lazyset&   lazyset,
+      Lazypos&   lazypos,
       Mods       modifiers,
       Locations& lookahead,
       Iter&      iter);
@@ -881,7 +864,7 @@ class Pattern {
       bool&      nullable,
       Follow&    followpos,
       Lazy&      lazyidx,
-      Lazyset&   lazyset,
+      Lazypos&   lazypos,
       Mods       modifiers,
       Locations& lookahead,
       Iter&      iter);
@@ -893,7 +876,7 @@ class Pattern {
       bool&      nullable,
       Follow&    followpos,
       Lazy&      lazyidx,
-      Lazyset&   lazyset,
+      Lazypos&   lazypos,
       Mods       modifiers,
       Locations& lookahead,
       Iter&      iter);
@@ -905,7 +888,7 @@ class Pattern {
       bool&      nullable,
       Follow&    followpos,
       Lazy&      lazyidx,
-      Lazyset&   lazyset,
+      Lazypos&   lazypos,
       Mods       modifiers,
       Locations& lookahead,
       Iter&      iter);
@@ -915,21 +898,23 @@ class Pattern {
   void compile(
       DFA::State *start,
       Follow&     followpos,
+      const Lazypos& lazypos,
       const Mods  modifiers,
       const Map&  lookahead);
   void lazy(
-      const Lazyset& lazyset,
+      const Lazypos& lazypos,
       Positions&     pos) const;
   void lazy(
-      const Lazyset&   lazyset,
+      const Lazypos&   lazypos,
       const Positions& pos,
       Positions&       pos1) const;
   void greedy(Positions& pos) const;
   void trim_anchors(Positions& follow, const Position p) const;
-  void trim_lazy(Positions *pos) const;
+  void trim_lazy(Positions *pos, const Lazypos& lazypos) const;
   void compile_transition(
       DFA::State *state,
       Follow&     followpos,
+      const Lazypos& lazypos,
       const Mods  modifiers,
       const Map&  lookahead,
       Moves&      moves) const;
@@ -952,8 +937,7 @@ class Pattern {
   void check_dfa_closure(
       const DFA::State *state,
       int               nest,
-      bool&             peek,
-      bool&             prev) const;
+      bool&             peek) const;
   void gencode_dfa_closure(
       FILE             *fd,
       const DFA::State *start,
@@ -1183,7 +1167,7 @@ class Pattern {
   Index                 cut_; ///< DFA s-t cut to improve predict match and HFA accuracy together with lbk_ and cbk_
   size_t                len_; ///< length of chr_[], less or equal to 255
   size_t                min_; ///< patterns after the prefix are at least this long but no more than 8
-  size_t                pin_; ///< number of needles
+  size_t                pin_; ///< number of needles, 0 to 16
   std::bitset<256>      cbk_; ///< characters to look back over when lbk_ > 0, never includes \n
   std::bitset<256>      fst_; ///< the beginning characters of the pattern
   char                  chr_[256];         ///< pattern prefix string or character needles for needle-based search
@@ -1194,7 +1178,7 @@ class Pattern {
   uint16_t              lbm_; ///< loopback minimum distance when lbk_ > 0
   uint16_t              lcp_; ///< primary least common character position in the pattern or 0xffff
   uint16_t              lcs_; ///< secondary least common character position in the pattern or 0xffff
-  size_t                bmd_; ///< Boyer-Moore jump distance on mismatch, B-M is enabled when bmd_ > 0
+  size_t                bmd_; ///< Boyer-Moore jump distance on mismatch, B-M is enabled when bmd_ > 0 (<= 255)
   uint8_t               bms_[256]; ///< Boyer-Moore skip array
   float                 pms_; ///< ms elapsed time to parse regex
   float                 vms_; ///< ms elapsed time to compile DFA vertices
@@ -1203,6 +1187,7 @@ class Pattern {
   float                 ams_; ///< ms elapsed time to analyze DFA for predict match and HFA
   size_t                npy_; ///< entropy derived from the bitap array bit_[]
   bool                  one_; ///< true if matching one string stored in chr_[] without meta/anchors
+  bool                  bol_; ///< true if matching all patterns at the begin of a line with anchor ^
 };
 
 } // namespace reflex

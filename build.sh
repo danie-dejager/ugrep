@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Build ugrep by invoking configure and make then test the binary
+
+# For help with configure options:
+# ./build.sh --help
+
 # help wanted?
 case $1 in
   --help|-h)
@@ -94,9 +99,9 @@ fi
 
 echo
 echo "ugrep was successfully built in $(pwd)/bin and tested:"
-ls -l bin/ug bin/ug+ bin/ugrep bin/ugrep+
+ls -l bin/ug bin/ug+ bin/ugrep bin/ugrep+ bin/ugrep-indexer
 echo
-echo "Copy bin/ug, bin/ug+, bin/ugrep, and bin/ugrep+ to a bin/ on your PATH"
+echo "Copy bin/ug, bin/ug+, bin/ugrep, bin/ugrep+, and bin/ugrep-indexer to a bin/ on your PATH"
 echo
 echo "Or install the ugrep tools on your system by executing:"
 echo "sudo make install"
