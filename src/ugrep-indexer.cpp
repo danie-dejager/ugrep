@@ -30,18 +30,18 @@
 @file      ugrep-indexer.cpp
 @brief     file system indexer for the ugrep search utility
 @author    Robert van Engelen - engelen@genivia.com
-@copyright (c) 2023, Robert van Engelen, Genivia Inc. All rights reserved.
+@copyright (c) 2023,2024 Robert van Engelen, Genivia Inc. All rights reserved.
 @copyright (c) BSD-3 License - see LICENSE.txt
 */
 
 // DO NOT ALTER THIS LINE: updated by makemake.sh and we need it physically here for MSVC++ build from source
-#define UGREP_VERSION "6.3.0"
+#define UGREP_VERSION "7.0.2"
 
 // use a task-parallel thread to decompress the stream into a pipe to search, also handles nested archives
 #define WITH_DECOMPRESSION_THREAD
 
 // ignore hidden files and directories in archives, but ugrep will never find them anymore when searching hidden!
-// #define WITH_SKIP_HIDDEN_ARCHIVES
+#define WITH_SKIP_HIDDEN_ARCHIVES
 
 // check if we are compiling for a windows OS, but not Cygwin or MinGW
 #if (defined(__WIN32__) || defined(_WIN32) || defined(WIN32) || defined(__BORLANDC__)) && !defined(__CYGWIN__) && !defined(__MINGW32__) && !defined(__MINGW64__)
@@ -122,9 +122,9 @@ int fopenw_s(FILE **file, const char *filename, const char *mode)
     return errno = (GetLastError() == ERROR_ACCESS_DENIED ? EACCES : ENOENT);
   int fd = _open_osfhandle(reinterpret_cast<intptr_t>(hFile), _O_RDONLY);
   if (fd == -1)
-  { 
+  {
     CloseHandle(hFile);
-    return errno = EINVAL; 
+    return errno = EINVAL;
   }
   *file = _fdopen(fd, mode);
   if (*file == NULL)
@@ -382,6 +382,8 @@ struct Stream {
 
   bool open(const char *pathname)
   {
+    if (file != NULL)
+      fclose(file);
     return fopenw_s(&file, pathname, "rb") == 0;
   }
 
@@ -390,11 +392,11 @@ struct Stream {
     // close input separately when not associated with the file
     if (input.file() != file && input.file() != NULL)
       fclose(input.file());
+    input.clear();
     // close the file
     if (file != NULL)
       fclose(file);
     file = NULL;
-    input.clear();
   }
 
 #ifdef HAVE_LIBZ
@@ -639,9 +641,11 @@ void help()
             encountered during indexing.  The default FILE is `" DEFAULT_IGNORE_FILE "'.\n\
             This option may be repeated to specify additional files.\n\
     -z, --decompress\n\
-            Index the contents of compressed files and archives.  When used\n\
-            with option --zmax=NUM, indexes the contents of compressed files\n\
-            and archives stored within archives up to NUM levels deep.\n"
+            Index the contents of compressed files and archives.  Hidden files\n\
+            in archives are ignored unless option -. or --hidden is specified.\n\
+            Option -I or --ignore-binary ignores compressed binary files.  When\n\
+            used with option --zmax=NUM, indexes the contents of compressed\n\
+            files and archives stored within archives up to NUM levels deep.\n"
 #ifndef HAVE_LIBZ
             "\
             This option is not available in this build of ugrep-indexer.\n"
@@ -716,6 +720,18 @@ void usage(const char *message, const char *arg = NULL)
   }
 }
 
+#ifdef HAVE_LIBZ
+// decompression error, function used by
+void cannot_decompress(const char *pathname, const char *message)
+{
+  ++warnings;
+  if (flag_no_messages)
+    return;
+  printf("ugrep-indexer: warning: cannot decompress %s: %s\n", pathname, message != NULL ? message : "");
+  fflush(stdout);
+}
+#endif
+
 // display a warning message unless option -s (--no-messages)
 void warning(const char *message, const char *arg = NULL)
 {
@@ -743,18 +759,6 @@ void error(const char *message, const char *arg)
   fflush(stdout);
 }
 
-#ifdef HAVE_LIBZ
-// decompression error, function used by 
-void cannot_decompress(const char *pathname, const char *message)
-{
-  ++warnings;
-  if (!flag_verbose || flag_no_messages)
-    return;
-  printf("ugrep-indexer: warning: cannot decompress %s: %s\n", pathname, message != NULL ? message : "");
-  fflush(stdout);
-}
-#endif
-
 // convert unsigned decimal to non-negative size_t, produce error when conversion fails
 size_t strtonum(const char *string, const char *message)
 {
@@ -777,32 +781,24 @@ size_t strtopos(const char *string, const char *message)
 // return true if s[0..n-1] contains a \0 (NUL) or a non-displayable invalid UTF-8 sequence
 bool is_binary(const char *s, size_t n)
 {
-  // file is binary if it contains a \0 (NUL)
-  if (memchr(s, '\0', n) != NULL)
-    return true;
-
-  if (n == 1)
-    return (*s & 0xc0) == 0x80;
-
   const char *e = s + n;
-
   while (s < e)
   {
-    while (s < e && !(*s & 0x80))
+    int8_t c;
+    while (s < e && (c = static_cast<int8_t>(*s)) > 0)
       ++s;
-
-    if (s >= e)
-      return false;
-
-    unsigned char c = static_cast<unsigned char>(*s);
-    if (c < 0xc2 || c > 0xf4 || ++s >= e || (*s & 0xc0) != 0x80)
+    if (s++ >= e)
+      break;
+    // U+0080 ~ U+07ff <-> c2 80 ~ df bf (disallow 2 byte overlongs)
+    if (c < -62 || c > -12 || s >= e || (*s++ & 0xc0) != 0x80)
       return true;
-
-    if (++s < e && (*s & 0xc0) == 0x80)
-      if (++s < e && (*s & 0xc0) == 0x80)
-        ++s;
+    // U+0800 ~ U+ffff <-> e0 a0 80 ~ ef bf bf (quick but allows surrogates and 3 byte overlongs)
+    if (c >= -32 && (s >= e || (*s++ & 0xc0) != 0x80))
+      return true;
+    // U+010000 ~ U+10ffff <-> f0 90 80 80 ~ f4 8f bf bf (quick but allows 4 byte overlongs)
+    if (c >= -16 && (s >= e || (*s++ & 0xc0) != 0x80))
+      return true;
   }
-
   return false;
 }
 
@@ -819,7 +815,6 @@ bool index(Stream& stream, const char *pathname, uint8_t *hashes, size_t& hashes
   noise = 0;
   size = 0;
   compressed = false;
-  archive = false;
   binary = false;
 
   // open next file when not currently indexing an archive, return false when failed
@@ -893,8 +888,19 @@ bool index(Stream& stream, const char *pathname, uint8_t *hashes, size_t& hashes
     return true;
   }
 
-  // check if input is binary up to buflen bytes, but do not cut off right after the first UTF-8 byte
-  binary = is_binary(buffer, buflen - ((buffer[buflen - 1] & 0xc0) == 0xc0));
+  // check buffer for binary data, the buffer is a window over the input file
+  size_t checklen = buflen; // note: buflen > 0
+  if ((buffer[checklen - 1] & 0x80) == 0x80)
+  {
+    // do not cut off the last UTF-8 sequence, ignore it, otherwise we risk failing the UTF-8 check
+    size_t n = std::min<size_t>(checklen, 4); // note: 1 <= n <= 4 bytes to check
+    while (n > 0 && (buffer[--checklen] & 0xc0) == 0x80)
+      --n;
+    if ((buffer[checklen] & 0xc0) != 0xc0)
+      binary = true;
+  }
+  binary = binary || is_binary(buffer, checklen);
+
   if (binary && flag_ignore_binary)
   {
     // if extracting a binary archive part, then read it to skip it
@@ -1784,7 +1790,7 @@ void indexer(const char *pathname)
         printf("%13" PRIu64 " directories ignored with --ignore-files\n%13" PRIu64 " files ignored with --ignore-files\n", ign_dirs, ign_files);
       printf("%13" PRIu64 " symbolic links skipped\n%13" PRIu64 " devices skipped\n", num_links, num_other);
       if (warnings > 0)
-        printf("%13zu warnings\n", warnings);
+        printf("%13zu warnings and errors\n", warnings);
       if (add_dirs == 0 && add_files == 0 && mod_files == 0 && del_files == 0)
         printf("\nChecked: indexes are fresh and up to date\n\n");
       else
@@ -1803,7 +1809,7 @@ void indexer(const char *pathname)
       printf("%13" PRIu64 " directories ignored with --ignore-files\n%13" PRIu64 " files ignored with --ignore-files\n", ign_dirs, ign_files);
     printf("%13" PRIu64 " symbolic links skipped\n%13" PRIu64 " devices skipped\n", num_links, num_other);
     if (!flag_quiet && warnings > 0)
-      printf("%13zu warnings\n", warnings);
+      printf("%13zu warnings and errors\n", warnings);
     if (sum_hashes_size > 0)
       printf("%13" PRId64 " bytes indexing storage increase at %" PRId64 " bytes/file\n\n", sum_hashes_size, sum_hashes_size / num_files);
     else

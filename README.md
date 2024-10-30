@@ -17,9 +17,15 @@ Why use ugrep?
 
 - ugrep is fast, user-friendly, and equipped with a ton of new features that users wanted
 
-- ugrep includes a TUI with built-in help, interactive search with search mode and options selection, and a file preview split screen
+- includes an interactive TUI with built-in help, Google-like search with AND/OR/NOT patterns, fuzzy search, searches (nested) zip/7z/tar/pax/cpio archives, tarballs and compressed files gz/Z/bz/bz2/lzma/xz/lz4/zstd/brotli, search and hexdump binary files, search documents such as PDF, doc, docx, and output in JSON, XML, CSV or your own customized format
 
-- ugrep is a true drop-in replacement for GNU grep, assuming you [copy or symlink `ug` to `grep`, `egrep` and `fgrep`](#grep), unlike most other popular grep claiming to be "grep alternatives" or "replacements" when those actually implement incompatible command-line options and use a different, incompatible regex matcher i.e. Perl regex versus POSIX regex grep (ugrep supports both)
+- Unicode extended regex pattern syntax with multi-line pattern matching without requiring special command-line options
+
+- includes a file indexer to speed up searching slow and cold file systems
+
+- a true drop-in replacement for GNU grep (assuming you [copy or symlink `ug` to `grep`, and to `egrep` and to `fgrep`](#grep)), unlike other popular grep claiming to be "grep alternatives" or "replacements" when those actually implement incompatible command-line options and use an incompatible regex matcher, i.e. Perl regex only versus POSIX BRE (grep) and ERE (egrep) when ugrep supports all regex modes
+
+- benchmarks show that [ugrep is (one of) the fastest grep](https://github.com/Genivia/ugrep-benchmarks) using the high-performance DFA-based regex matcher [RE/flex](https://github.com/Genivia/RE-flex)
 
 Development roadmap
 -------------------
@@ -28,7 +34,7 @@ Development roadmap
 
 - #1 priority is quality assurance to continue to make sure ugrep has no bugs and is reliable
 
-- make ugrep run even faster, see [#385](https://github.com/Genivia/ugrep/issues/385)
+- make ugrep run even faster, see for example [#432](https://github.com/Genivia/ugrep/issues/432), [#421](https://github.com/Genivia/ugrep/issues/421)
 
 - share [reproducible performance results](https://github.com/Genivia/ugrep-benchmarks)
 
@@ -266,20 +272,6 @@ directory or home directory.
 
 ### Windows
 
-Practical hints on using `ugrep.exe` and `ug.exe` on the Windows command line:
-
-- when quoting patterns and arguments on the command line, do not use single
-  `'` quotes but use `"` instead; most Windows command utilities consider
-  the single `'` quotes part of the command-line argument!
-- file and directory globs are best specified with option `-g/GLOB` instead of
-  the usual `GLOB` command line arguments to select files and directories to
-  search, especially for recursive searches;
-- when specifying an empty pattern `""` to match all input, this may be ignored
-  by some Windows command interpreters such as Powershell, in that case you
-  must specify option `--match` instead;
-- to match newlines in patterns, you may want to use `\R` instead of `\n` to
-  match any Unicode newlines, such as `\r\n` pairs and single `\r` and `\n`.
-
 Install with [Winget](https://learn.microsoft.com/en-us/windows/package-manager/)
 `winget install Genivia.ugrep`
 
@@ -289,15 +281,31 @@ Or install with [Chocolatey](https://community.chocolatey.org/packages/ugrep)
 Or install with [Scoop](https://scoop.sh) `scoop install ugrep`
 
 Or download the full-featured `ugrep.exe` executable as release artifact from
-<https://github.com/Genivia/ugrep/releases>.  Then copy `ugrep.exe` to `ug.exe`
-if you also want the `ug` command intended for interactive use, which loads the
-.ugrep configuration file when present in the working directory or home
-directory.
+<https://github.com/Genivia/ugrep/releases>.  The zipped release contains the
+main `ugrep.exe` binary as well as `ug.exe`. The `ug` command, intended for 
+interactive use, loads and reads in settings from the _`.ugrep`_ configuration 
+file (when present in the working directory or home directory).
 
 Add `ugrep.exe` and `ug.exe` to your execution path: go to *Settings* and
 search for "Path" in *Find a Setting*.  Select *environment variables* ->
 *Path* -> *New* and add the directory where you placed the `ugrep.exe` and
 `ug.exe` executables.
+
+
+>[!TIP]
+> _Practical hints on using `ugrep.exe` and `ug.exe` on the Windows command line:_
+>
+>- when quoting patterns and arguments on the command line, do not use single
+>`'` quotes but use `"` instead; most Windows command utilities consider
+>the single `'` quotes part of the command-line argument!
+>- file and directory globs are best specified with option `-g/GLOB` instead of
+>the usual `GLOB` command line arguments to select files and directories to
+>search, especially for recursive searches;
+>- when specifying an empty pattern `""` to match all input, this may be ignored
+>by some Windows command interpreters such as Powershell, in that case you
+>must specify option `--match` instead;
+>- to match newlines in patterns, you may want to use `\R` instead of `\n` to
+>match any Unicode newlines, such as `\r\n` pairs and single `\r` and `\n`.
 
 ### Alpine Linux
 
@@ -411,14 +419,15 @@ You can always add these later, when you need these features:
   `.bz3` files, install the [bzip3](https://github.com/kspalaiologos/bzip3)
   library (optional, not required), e.g. with `sudo apt-get install -y bzip3`.
 
-**Note:** even if your system has command line utilities, such as `bzip2`, that
-does not necessarily mean that the development libraries such as `libbz2` are
-installed.  The *development libraries* should be installed.
-
-**Note:** some Linux systems may not be configured to load dynamic libraries
-from `/usr/local/lib`, causing a library load error when running `ugrep`.  To
-correct this, add `export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib"` to
-your `~/.bashrc` file.  Or run `sudo ldconfig /usr/local/lib`.
+>[!TIP]
+>Even if your system has command line utilities, such as `bzip2`, that
+>does not necessarily mean that the development libraries such as `libbz2` are
+>installed.  The *development libraries* should be installed.
+>
+>Some Linux systems may not be configured to load dynamic libraries from
+>`/usr/local/lib`, causing a library load error when running `ugrep`.  To
+>correct this, add `export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib"`
+>to your `~/.bashrc` file.  Or run `sudo ldconfig /usr/local/lib`.
 
 ### Other platforms: step 3 build
 
@@ -445,8 +454,8 @@ You can build static executables by specifying:
 
     $ ./build.sh --enable-static
 
-**Note:** this may fail if libraries don't link statically, such as brotli.
-In that case try `./build.sh --enable-static --without-brotli`.
+This may fail if libraries don't link statically, such as brotli.  In that case
+try `./build.sh --enable-static --without-brotli`.
 
 You can build `ugrep` with customized defaults enabled, such as a pager:
 
@@ -730,25 +739,21 @@ where:
 
 Commonly-used aliases to add to `.bashrc` to increase productivity:
 
-    alias uq     = 'ug -Q'       # short & quick query TUI (interactive, uses .ugrep config)
-    alias ux     = 'ug -UX'      # short & quick binary pattern search (uses .ugrep config)
-    alias uz     = 'ug -z'       # short & quick compressed files and archives search (uses .ugrep config)
+    alias uq     = 'ug -Q'                # interactive TUI search (uses .ugrep config)
+    alias uz     = 'ug -z'                # compressed files and archives search (uses .ugrep config)
+    alias ux     = 'ug -U --hexdump'      # binary pattern search (uses .ugrep config)
 
     alias ugit   = 'ug -R --ignore-files' # works like git-grep & define your preferences in .ugrep config
 
-    alias grep   = 'ugrep -G'    # search with basic regular expressions (BRE)
-    alias egrep  = 'ugrep -E'    # search with extended regular expressions (ERE)
-    alias fgrep  = 'ugrep -F'    # find string(s)
-    alias pgrep  = 'ugrep -P'    # search with Perl regular expressions
-    alias xgrep  = 'ugrep -W'    # search (ERE) and output text or hex for binary
+    alias grep   = 'ug -G'                # search with basic regular expressions (BRE) like grep
+    alias egrep  = 'ug -E'                # search with extended regular expressions (ERE) like egrep
+    alias fgrep  = 'ug -F'                # find string(s) like fgrep
+    alias zgrep  = 'ug -zG'               # search compressed files and archives with BRE
+    alias zegrep = 'ug -zE'               # search compressed files and archives with ERE
+    alias zfgrep = 'ug -zF'               # find string(s) in compressed files and/or archives
 
-    alias zgrep  = 'ugrep -zG'   # search compressed files and archives with BRE
-    alias zegrep = 'ugrep -zE'   # search compressed files and archives with ERE
-    alias zfgrep = 'ugrep -zF'   # find string(s) in compressed files and/or archives
-    alias zpgrep = 'ugrep -zP'   # search compressed files and archives with Perl regular expressions
-    alias zxgrep = 'ugrep -zW'   # search (ERE) compressed files/archives and output text or hex for binary
-
-    alias xdump  = 'ugrep -X ""' # hexdump files without searching
+    alias xdump  = 'ugrep -X ""'                 # hexdump files without searching (don't use .ugrep config)
+    alias zmore  = 'ugrep+ -z -I -+ --pager ""'  # view compressed, archived and regular files (don't use .ugrep config)
 
 🔝 [Back to table of contents](#toc)
 
@@ -2587,6 +2592,16 @@ meaning; any name or string that does not contain a `:` or `,` may be used.
 
 ### Searching and displaying binary files with -U, -W, and -X
 
+    --hexdump[=[1-8][a][bch][A[NUM]][B[NUM]][C[NUM]]]
+            Output matches in 1 to 8 columns of 8 hexadecimal octets.  The
+            default is 2 columns or 16 octets per line.  Argument `a' outputs a
+            `*' for all hex lines that are identical to the previous hex line,
+            `b' removes all space breaks, `c' removes the character column, `h'
+            removes hex spacing, `A' includes up to NUM hex lines after a
+            match, `B' includes up to NUM hex lines before a match and `C'
+            includes up to NUM hex lines before and after a match.  Arguments
+            `A', `B' and `C' are the same as options -A, -B and -C when used
+            with --hexdump.  See also options -U, -W and -X.
     -U, --ascii, --binary
             Disables Unicode matching for binary file matching, forcing PATTERN
             to match bytes, not Unicode characters.  For example, -U '\xa3'
@@ -2594,30 +2609,21 @@ meaning; any name or string that does not contain a `:` or `,` may be used.
             represented by the UTF-8 sequence C2 A3.  See also --dotall.
     -W, --with-hex
             Output binary matches in hexadecimal, leaving text matches alone.
-            This option is equivalent to the --binary-files=with-hex option
-            with --hexdump=2C.  To omit the matching line from the hex output,
-            combine option --hexdump with option -W.  See also option -U.
+            This option is equivalent to the --binary-files=with-hex option.
+            To omit the matching line from the hex output, use both options -W
+            and --hexdump.  See also options -U.
     -X, --hex
-            Output matches in hexadecimal.  This option is equivalent to the
-            --binary-files=hex option with --hexdump=2C.  To omit the matching
+            Output matches and matching lines in hexadecimal.  This option is
+            equivalent to the --binary-files=hex option.  To omit the matching
             line from the hex output use option --hexdump.  See also option -U.
-    --hexdump[=[1-8][a][bch][A[NUM]][B[NUM]][C[NUM]]]
-            Output matches in 1 to 8 columns of 8 hexadecimal octets.  The
-            default is 2 columns or 16 octets per line.  Option `a' outputs a
-            `*' for all hex lines that are identical to the previous hex line,
-            `b' removes all space breaks, `c' removes the character column, `h'
-            removes hex spacing, `A' includes up to NUM hex lines after the
-            match, `B' includes up to NUM hex lines before the match and `C'
-            includes up to NUM hex lines.  When NUM is omitted, the matching
-            line is included in the output.  See also options -U, -W and -X.
     --dotall
             Dot `.' in regular expressions matches anything, including newline.
             Note that `.*' matches all input and should not be used.
 
 Note that `--hexdump` differs from `-X` by omitting the matching line from the
 hex output, showing only the matching pattern using a minimal number of hex
-lines.  Option `-X` is the same as `--hexdump=2C` to display the matching line
-as hex `C` context.
+lines.  Additional match context hex lines are output with the `-ABC` context
+options or with `--hexdump=C3` to output 3 hex lines as context, for example.
 
 To search a file for ASCII words, displaying text lines as usual while binary
 content is shown in hex with `-U` and `-W`:
@@ -3375,8 +3381,8 @@ option           | format string (within quotes)
 option           | format string (within quotes)
 ---------------- | -----------------------------
 `--format-begin` | `'<grep>%~'`
-`--format-open`  | `'  <file%[]$%[ name=]H>%~'`
-`--format`       | `'    <match%[\"]$%[ line=\"]N%[ column=\"]K%[ offset=\"]B>%X</match>%~%u'`
+`--format-open`  | `'  <file%["]$%[ name="]I>%~'`
+`--format`       | `'    <match%["]$%[ line="]N%[ column="]K%[ offset="]B>%X</match>%~%u'`
 `--format-close` | `'  </file>%~'`
 `--format-end`   | `'</grep>%~'`
 
@@ -3391,6 +3397,8 @@ The following fields may be used in the `FORMAT` string:
 
 field                   | output
 ----------------------- | ------------------------------------------------------
+`%%`                    | the percentage sign
+`%~`                    | a newline (LF or CRLF in Windows)
 `%F`                    | if option `-H` is used: the file pathname and separator
 `%[TEXT]F`              | if option `-H` is used: `TEXT`, the file pathname and separator
 `%f`                    | the file pathname
@@ -3401,6 +3409,9 @@ field                   | output
 `%+`                    | if option `-+` or `--heading` is used: `%F` and a newline character, suppress all `%F` and `%H` afterward
 `%[TEXT]H`              | if option `-H` is used: `TEXT`, the quoted pathname and separator, `\"` and `\\` replace `"` and `\`
 `%h`                    | the quoted file pathname, `\"` and `\\` replace `"` and `\`
+`%I`                    | if option `-H` is used: the pathname in XML and separator
+`%[TEXT]I`              | if option `-H` is used: `TEXT`, the pathname as XML and separator
+`%i`                    | the file pathnames as XML
 `%N`                    | if option `-n` is used: the line number and separator
 `%[TEXT]N`              | if option `-n` is used: `TEXT`, the line number and separator
 `%n`                    | the line number of the match
@@ -3409,6 +3420,7 @@ field                   | output
 `%K`                    | if option `-k` is used: the column number and separator
 `%[TEXT]K`              | if option `-k` is used: `TEXT`, the column number and separator
 `%k`                    | the column number of the match
+`%A`                    | byte range (offset and end) of a match in hex
 `%B`                    | if option `-b` is used: the byte offset and separator
 `%[TEXT]B`              | if option `-b` is used: `TEXT`, the byte offset and separator
 `%b`                    | the byte offset of the match
@@ -3425,7 +3437,6 @@ field                   | output
 `%S`                    | if not the first match: separator, see also `%[SEP]$`
 `%[TEXT]S`              | if not the first match: `TEXT` and separator, see also `%[SEP]$`
 `%s`                    | the separator, see also `%[TEXT]S` and `%[SEP]$`
-`%~`                    | a newline (LF or CRLF in Windows)
 `%R`                    | if option `--break` or `--heading` is used: a newline
 `%m`                    | the number of matches, sequential (or number of matching files with `--format-end`)
 `%M`                    | the number of matching lines (or number of matching files with `--format-end`)
@@ -3450,6 +3461,8 @@ field                   | output
 `%Z`                    | the edit distance cost of an approximate match with option `-Z`
 `%u`                    | select unique lines only unless option -u is used
 `%[hhhh]U`              | U+hhhh Unicode code point
+`%[CODE]=`              | a color CODE, such as `ms`, see [colors](#color)
+`%=`                    | turn color off
 `%1` `%2` ... `%9`      | the first regex group capture of the match, and so on up to group `%9`, requires option `-P`
 `%[NUM]#`               | the group capture `NUM`; requires option `-P`
 `%[NUM]b`               | the byte offset of the group capture `NUM`; requires option `-P`
@@ -3491,15 +3504,25 @@ field                   | output
 `%[TEXT1\|TEXT2\|...]G` | list of TEXT indexed by group capture indices that matched; requires option `-P`
 `%g`                    | the group capture index of the match or 1 (see note)
 `%[TEXT1\|TEXT2\|...]g` | the first TEXT indexed by the first group capture index that matched; requires option `-P`
-`%%`                    | the percentage sign
 
 Note:
 
 - Formatted output is written without a terminating newline, unless `%~` is
   explicitly specified in the format string.
+- Option `-o` changes the output of the `%O` and `%Q` fields to output the
+  match only.
+- Options `-c`, `-l` and `-o` change the output of `%C`, `%J`, `%X` and `%Y`
+  accordingly
 - The `[TEXT]` part of a field is optional and may be omitted.  When present,
   the argument must be placed in `[]` brackets, for example `%[,]F` to output a
   comma, the pathname, and a separator, when option `-H` is used.
+- Numeric fields such as `%n` are padded with spaces when `%{width}n` is
+  specified.
+- Matching line fields such as `%O` are cut to width when `%{width}O` is
+  specified or when `%{-width}O` is specified to cut from the end of the line.
+- Character context on a matching line before or after a match is output when
+  `%{-width}o` or `%{+width}o` is specified for match fields such as `%o`,
+  where `%{width}o` without a +/- sign cuts the match to the specified width.
 - Fields `%[SEP]$` and `%u` are switches and do not write anything to the
   output.
 - The separator used by `%F`, `%H`, `%N`, `%K`, `%B`, `%S`, and `%G` may be
@@ -4386,14 +4409,14 @@ in markdown:
 
            --hexdump[=[1-8][a][bch][A[NUM]][B[NUM]][C[NUM]]]
                   Output matches in 1 to 8 columns of 8 hexadecimal octets.  The
-                  default is 2 columns or 16 octets per line.  Option `a' outputs a
-                  `*' for all hex lines that are identical to the previous hex line,
-                  `b' removes all space breaks, `c' removes the character column,
-                  `h' removes hex spacing, `A' includes up to NUM hex lines after
-                  the match, `B' includes up to NUM hex lines before the match and
-                  `C' includes up to NUM hex lines.  When NUM is omitted, the
-                  matching line is included in the output.  See also options -U, -W
-                  and -X.
+                  default is 2 columns or 16 octets per line.  Argument `a' outputs
+                  a `*' for all hex lines that are identical to the previous hex
+                  line, `b' removes all space breaks, `c' removes the character
+                  column, `h' removes hex spacing, `A' includes up to NUM hex lines
+                  after a match, `B' includes up to NUM hex lines before a match and
+                  `C' includes up to NUM hex lines before and after a match.
+                  Arguments `A', `B' and `C' are the same as options -A, -B and -C
+                  when used with --hexdump.  See also options -U, -W and -X.
 
            --hidden, -.
                   Search hidden files and directories.
@@ -4631,13 +4654,13 @@ in markdown:
                   -e.  Press F1 or CTRL-Z to view the help screen.  Press F2 or
                   CTRL-Y to invoke a command to view or edit the file shown at the
                   top of the screen.  The command can be specified with option
-                  --view, or defaults to environment variable PAGER when defined, or
-                  EDITOR.  Press Tab and Shift-Tab to navigate directories and to
-                  select a file to search.  Press Enter to select lines to output.
-                  Press ALT-l for option -l to list files, ALT-n for -n, etc.
-                  Non-option commands include ALT-] to increase context and ALT-} to
-                  increase fuzzyness.  See also options --no-confirm, --delay,
-                  --split and --view.
+                  --view and defaults to environment variable PAGER when defined, or
+                  VISUAL or EDITOR.  Press Tab or Shift-Tab to navigate directories
+                  and to select a file to search.  Press Enter to select lines to
+                  output.  Press ALT-l for option -l to list files, ALT-n for -n,
+                  etc.  Non-option commands include ALT-] to increase context and
+                  ALT-} to increase fuzzyness.  See also options --no-confirm,
+                  --delay, --split and --view.
 
            -q, --quiet, --silent
                   Quiet mode: suppress all output.  Only search a file until a match
@@ -4680,10 +4703,12 @@ in markdown:
                   indirectly load the specified FILE, but recursive config loading
                   is not allowed.
 
-           --separator[=SEP]
+           --separator[=SEP], --context-separator=SEP
                   Use SEP as field separator between file name, line number, column
-                  number, byte offset and the matched line.  The default is a colon
-                  (`:') and a bar (`|') for multi-line pattern matches.
+                  number, byte offset and the matched line.  The default separator
+                  is a colon (`:') and a bar (`|') for multi-line pattern matches,
+                  and a dash (`-') for context lines.  See also option
+                  --group-separator.
 
            --split
                   Split the -Q query TUI screen on startup.
@@ -4774,9 +4799,9 @@ in markdown:
 
            -W, --with-hex
                   Output binary matches in hexadecimal, leaving text matches alone.
-                  This option is equivalent to the --binary-files=with-hex option
-                  with --hexdump=2C.  To omit the matching line from the hex output,
-                  combine option --hexdump with option -W.  See also option -U.
+                  This option is equivalent to the --binary-files=with-hex option.
+                  To omit the matching line from the hex output, use both options -W
+                  and --hexdump.  See also options -U.
 
            -w, --word-regexp
                   The PATTERN is searched for as a word, such that the matching text
@@ -4790,8 +4815,8 @@ in markdown:
                   double wide characters in the output may result in wider lines.
 
            -X, --hex
-                  Output matches in hexadecimal.  This option is equivalent to the
-                  --binary-files=hex option with --hexdump=2C.  To omit the matching
+                  Output matches and matching lines in hexadecimal.  This option is
+                  equivalent to the --binary-files=hex option.  To omit the matching
                   line from the hex output use option --hexdump.  See also option
                   -U.
 
@@ -5082,6 +5107,12 @@ in markdown:
 
            %h     the quoted file pathname, \" and \\ replace " and \.
 
+           %[TEXT]I
+                  if option -H is used: TEXT, the pathname as XML character data and
+                  separator.
+
+           %i     the file pathname as XML character data.
+
            %[TEXT]N
                   if option -n is used: TEXT, the line number and separator.
 
@@ -5224,7 +5255,7 @@ in markdown:
 
            %[SEP]$ and %u are switches and do not send anything to the output.
 
-           The separator used by the %F, %H, %N, %K, %B, %S and %G fields may be
+           The separator used by the %F, %H, %I, %N, %K, %B, %S and %G fields may be
            changed by preceding the field by %[SEP]$.  When [SEP] is not provided,
            this reverts the separator to the default separator or the separator
            specified with --separator.
@@ -5427,7 +5458,7 @@ in markdown:
 
 
 
-    ugrep 6.3.0                       July 31, 2024                         UGREP(1)
+    ugrep 7.0.2                     October 27, 2024                        UGREP(1)
 
 🔝 [Back to table of contents](#toc)
 

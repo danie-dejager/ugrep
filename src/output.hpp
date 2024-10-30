@@ -39,6 +39,7 @@
 
 #include "ugrep.hpp"
 #include <reflex/bits.h>
+#include <reflex/utf8.h>
 #include <reflex/matcher.h>
 #include <reflex/fuzzymatcher.h>
 #include <list>
@@ -334,12 +335,20 @@ class Output {
       delete lock_;
   }
 
-  // output a character c
+  // output an 8-bit character c
   inline void chr(int c)
   {
     if (cur_ >= buf_->data + SIZE)
       next();
     *cur_++ = c;
+  }
+
+  // output a wide character c
+  inline void wchr(int c)
+  {
+    char buf[8];
+    size_t size = reflex::utf8(c, buf);
+    str(buf, size);
   }
 
   // output a std::string s
@@ -376,24 +385,34 @@ class Output {
     cur_ += n;
   }
 
-  // output a UTF-8 multibyte string s of byte length n for up to k UTF-8-encoded characters
-  inline void utf8strn(const char *s, size_t n, size_t k)
+  // get pointer to position k (not beyond s+n) in a UTF-8 multibyte string s of byte length n
+  inline const char * utf8pos(const char *s, size_t n, size_t k)
   {
-    const char *t = s;
     while (n-- > 0 && k-- > 0)
       while (static_cast<uint8_t>(*++s & 0xc0) == 0x80 && n > 0)
         --n;
-    str(t, s - t);
+    return s;
   }
 
-  // output a UTF-8 multibyte string s (\0-terminated) for up to k Unicode characters
-  inline void utf8str(const char *s, size_t k)
+  // get pointer to position -k (not before b) before a UTF-8 multibyte string s
+  inline const char * utf8back(const char *b, const char *s, size_t k)
   {
-    const char *t = s;
-    while (*s != '\0' && k-- > 0)
-      while (static_cast<uint8_t>(*++s & 0xc0) == 0x80)
+    while (s > b && k-- > 0)
+      while (s > b && static_cast<uint8_t>(*--s & 0xc0) == 0x80)
         continue;
-    str(t, s - t);
+    return s;
+  }
+
+  // get length of string s of byte length n cut to length k
+  inline size_t utf8cut(const char *s, size_t n, size_t k)
+  {
+    return utf8pos(s, n, k) - s;
+  }
+
+  // output a UTF-8 multibyte string s of byte length n for up to k UTF-8-encoded characters
+  inline void utf8strn(const char *s, size_t n, size_t k)
+  {
+    str(s, utf8cut(s, n, k));
   }
 
   // output a URI-encoded string s
@@ -419,38 +438,108 @@ class Output {
     }
   }
 
-  // output a match
-  inline void mat(reflex::AbstractMatcher *matcher)
+  // get match or context string pointer and size
+  inline const char *match_context(reflex::AbstractMatcher *matcher, bool plus, int width, size_t& n)
   {
-    if (flag_only_matching)
+    if (width == 0)
     {
-      str(matcher->begin(), matcher->size());
+      n = matcher->size();
+      return matcher->begin();
     }
-    else
+    else if (width > 0)
     {
-      const char *e = matcher->eol(); // warning: must call eol() before bol()
+      if (plus) // {+width}
+      {
+        const char *e = matcher->eol();
+        const char *c = matcher->end();
+        n = utf8cut(c, e - c, width);
+        return c;
+      }
+      else // {width}
+      {
+        const char *s = matcher->begin();
+        n = utf8cut(s, matcher->size(), width);
+        return s;
+      }
+    }
+    else // {-width}
+    {
       const char *b = matcher->bol();
-      str(b, e - b);
+      const char *s = matcher->begin();
+      b = utf8back(b, s, -width);
+      n = s - b;
+      return b;
     }
   }
 
-  // output a quoted match with escapes for \ and "
-  inline void quote(reflex::AbstractMatcher *matcher)
+  // output a matching line or a match if -o
+  inline void mat(reflex::AbstractMatcher *matcher, int w = 0)
   {
     if (flag_only_matching)
     {
-      quote(matcher->begin(), matcher->size());
+      const char *s = matcher->begin();
+      size_t n = matcher->size();
+      if (flag_hex || (flag_with_hex && !reflex::isutf8(s, s + n)))
+      {
+        if (w > 0 && static_cast<size_t>(w) < n)
+          n = w;
+        hex(s, n);
+      }
+      else
+      {
+        if (w > 0)
+          s = match_context(matcher, false, w, n);
+        str(s, n);
+      }
     }
     else
     {
       const char *e = matcher->eol(); // warning: must call eol() before bol()
       const char *b = matcher->bol();
+      if (flag_hex || (flag_with_hex && !reflex::isutf8(b, e)))
+      {
+        if (w > 0 && b + w < e)
+          e = b + w;
+        else if (w < 0 && e + w > b)
+          b = e + w;
+        hex(b, e - b);
+      }
+      else if (w > 0)
+      {
+        utf8strn(b, e - b, w);
+      }
+      else
+      {
+        if (w < 0)
+          b = utf8back(b, e, -w);
+        str(b, e - b);
+      }
+    }
+  }
+
+  // output a quoted matching line or a match if -o with escapes for \ and "
+  inline void quote(reflex::AbstractMatcher *matcher, int w = 0)
+  {
+    if (flag_only_matching)
+    {
+      size_t n = matcher->size();
+      const char *s = (w > 0 ? match_context(matcher, false, w, n) : matcher->begin());
+      quote(s, n);
+    }
+    else
+    {
+      const char *e = matcher->eol(); // warning: must call eol() before bol()
+      const char *b = matcher->bol();
+      if (w > 0)
+        e = utf8pos(b, e - b, w);
+      else if (w < 0)
+        b = utf8back(b, e, -w);
       quote(b, e - b);
     }
   }
 
   // output a match as a string in C/C++
-  inline void cpp(reflex::AbstractMatcher *matcher)
+  inline void cpp(reflex::AbstractMatcher *matcher, int w = 0)
   {
     if (flag_only_matching)
     {
@@ -460,12 +549,16 @@ class Output {
     {
       const char *e = matcher->eol(); // warning: must call eol() before bol()
       const char *b = matcher->bol();
+      if (w > 0)
+        e = utf8pos(b, e - b, w);
+      else if (w < 0)
+        b = utf8back(b, e, -w);
       cpp(b, e - b);
     }
   }
 
   // output a match as a quoted string in CSV
-  inline void csv(reflex::AbstractMatcher *matcher)
+  inline void csv(reflex::AbstractMatcher *matcher, int w = 0)
   {
     if (flag_only_matching)
     {
@@ -475,12 +568,16 @@ class Output {
     {
       const char *e = matcher->eol(); // warning: must call eol() before bol()
       const char *b = matcher->bol();
+      if (w > 0)
+        e = utf8pos(b, e - b, w);
+      else if (w < 0)
+        b = utf8back(b, e, -w);
       csv(b, e - b);
     }
   }
 
   // output a match as a quoted string in JSON
-  inline void json(reflex::AbstractMatcher *matcher)
+  inline void json(reflex::AbstractMatcher *matcher, int w = 0)
   {
     if (flag_only_matching)
     {
@@ -490,12 +587,35 @@ class Output {
     {
       const char *e = matcher->eol(); // warning: must call eol() before bol()
       const char *b = matcher->bol();
+      if (w > 0)
+        e = utf8pos(b, e - b, w);
+      else if (w < 0)
+        b = utf8back(b, e, -w);
       json(b, e - b);
     }
   }
 
+  // output a match in hex
+  inline void hex(reflex::AbstractMatcher *matcher, int w = 0)
+  {
+    if (flag_only_matching)
+    {
+      hex(matcher->begin(), matcher->size());
+    }
+    else
+    {
+      const char *e = matcher->eol(); // warning: must call eol() before bol()
+      const char *b = matcher->bol();
+      if (w > 0)
+        e = utf8pos(b, e - b, w);
+      else if (w < 0)
+        b = utf8back(b, e, -w);
+      hex(b, e - b);
+    }
+  }
+
   // output a match in XML
-  inline void xml(reflex::AbstractMatcher *matcher)
+  inline void xml(reflex::AbstractMatcher *matcher, int w = 0)
   {
     if (flag_only_matching)
     {
@@ -505,41 +625,47 @@ class Output {
     {
       const char *e = matcher->eol(); // warning: must call eol() before bol()
       const char *b = matcher->bol();
+      if (w > 0)
+        e = utf8pos(b, e - b, w);
+      else if (w < 0)
+        b = utf8back(b, e, -w);
       xml(b, e - b);
     }
   }
 
   // output an unsigned integer i with field width w (padded with spaces)
-  inline void num(size_t i, size_t w = 1)
+  inline void num(size_t i, int w = 0)
   {
     char tmp[24];
-    size_t k = sizeof(tmp);
+    int k = sizeof(tmp);
 
     do
       tmp[--k] = i % 10 + '0';
     while ((i /= 10) > 0);
 
-    size_t n = sizeof(tmp) - k;
+    int n = sizeof(tmp) - k;
 
-    while (w-- > n)
+    w -= n;
+    while (w-- > 0)
       chr(' ');
 
     str(&tmp[k], n);
   }
 
   // output a number in hex with width w (padded with digit '0')
-  inline void hex(size_t i, size_t w = 1)
+  inline void hex(size_t i, int w = 0)
   {
     char tmp[16];
-    size_t k = sizeof(tmp);
+    int k = sizeof(tmp);
 
     do
       tmp[--k] = "0123456789abcdef"[i & 0xf];
     while ((i >>= 4) > 0);
 
-    size_t n = sizeof(tmp) - k;
+    int n = sizeof(tmp) - k;
 
-    while (w-- > n)
+    w -= n;
+    while (w-- > 0)
       chr('0');
 
     str(&tmp[k], n);
@@ -765,6 +891,9 @@ class Output {
     return sync != NULL && sync->cancelled();
   }
 
+  // output color when set
+  void color(const char *arg);
+
   // output the header part of the match, preceding the matched line
   void header(const char *pathname, const std::string& partname, bool& heading, size_t lineno, reflex::AbstractMatcher *matcher, size_t byte_offset, const char *sep, bool newline);
 
@@ -791,6 +920,9 @@ class Output {
 
   // output quoted string in CSV
   void csv(const char *data, size_t size);
+
+  // output in hex
+  void hex(const char *data, size_t size);
 
   // output quoted string in JSON
   void json(const char *data, size_t size);
@@ -844,7 +976,7 @@ class Output {
   char                         *cur_;     // current position in the current buffer
   int                           mode_;    // bitmask 1 if line buffered 2 if hold
   size_t                        cols_;    // number of columns output so far, if --width
-  ANSI                          ansi_;    // ANSI escape sequence
+  ANSI                          ansi_;    // ANSI escape sequence state machine state
   bool                          skip_;    // skip until next newline in buffers, if --width
 
 };

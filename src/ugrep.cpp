@@ -756,40 +756,15 @@ inline bool getline(const char *& here, size_t& left, reflex::BufferedInput& buf
   return ch == EOF && line.empty();
 }
 
-// return true if s[0..n-1] contains a \0 (NUL) or a non-displayable invalid UTF-8 encoding sequence
+// return true if s[0..n-1] contains a \0 (NUL) or a non-displayable invalid UTF-8 encoding
 inline bool is_binary(const char *s, size_t n)
 {
-  // file is binary if it contains a \0 (NUL) which is what grep checks
-  if (memchr(s, '\0', n) != NULL)
-    return true;
-
-  // not -U nor -W: file is binary if it has an invalid UTF-8 encoding
+  // not -U or -W: file is binary if it has a \0 (NUL) or an invalid UTF-8 encoding
   if (!flag_binary || flag_with_hex)
-  {
-    if (n == 1)
-      return (*s & 0xc0) == 0x80;
+    return !reflex::isutf8(s, s + n);
 
-    const char *e = s + n;
-
-    while (s < e)
-    {
-      while (s < e && !(*s & 0x80))
-        ++s;
-
-      if (s >= e)
-        return false;
-
-      unsigned char c = static_cast<unsigned char>(*s);
-      if (c < 0xc2 || c > 0xf4 || ++s >= e || (*s & 0xc0) != 0x80)
-        return true;
-
-      if (++s < e && (*s & 0xc0) == 0x80)
-        if (++s < e && (*s & 0xc0) == 0x80)
-          ++s;
-    }
-  }
-
-  return false;
+  // otherwise, file is binary if it contains a \0 (NUL) which is what GNU grep checks
+  return memchr(s, '\0', n) != NULL;
 }
 
 // check if a file's inode is the current output file
@@ -2336,7 +2311,7 @@ struct Grep {
 
 #ifndef OS_WIN
 
-  // extend the reflex::Input::Handler to handle stdin from a TTY or from a slow pipe
+  // extend the reflex::Input::Handler to handle nonblocking stdin from a TTY or from a slow pipe
   struct StdInHandler : public reflex::Input::Handler {
 
     StdInHandler(Grep *grep)
@@ -4063,22 +4038,24 @@ struct Grep {
     return true;
   }
 
-  // after opening a file with init_read, check if its initial part (up to 64K or what could be read) is binary
+  // after opening a file with init_read, check if its initial part is binary
   bool init_is_binary()
   {
-    size_t avail = matcher->avail();
-
+    // check up to 64K in buffer for binary data, the buffer is a window over the input file
+    size_t avail = std::min<size_t>(matcher->avail(), 65536);
     if (avail == 0)
       return false;
 
-    // check up to 32K ahead in buffer
-    if (avail > 32768)
-      avail = 32768;
-
-    // do not cut off right after the first UTF-8 byte
-    if (avail > 0 && (matcher->begin()[avail - 1] & 0xc0) == 0xc0)
-      if (--avail == 0)
+    // do not cut off the last UTF-8 sequence, ignore it, otherwise we risk failing the UTF-8 check
+    const char *buf = matcher->begin();
+    if ((buf[avail - 1] & 0x80) == 0x80)
+    {
+      size_t n = std::min<size_t>(avail, 4); // note: 1 <= n <= 4 bytes to check
+      while (n > 0 && (buf[--avail] & 0xc0) == 0x80)
+        --n;
+      if ((buf[avail] & 0xc0) != 0xc0)
         return true;
+    }
 
     return is_binary(matcher->begin(), avail);
   }
@@ -5261,9 +5238,9 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                 else if (strncmp(arg, "colour=", 7) == 0)
                   flag_color = strarg(getloptarg(argc, argv, arg + 7, i));
                 else if (strncmp(arg, "colors=", 7) == 0)
-                  flag_colors = strarg(getloptarg(argc, argv, arg + 7, i));
+                  flag_colors = strarg(arg + 7);
                 else if (strncmp(arg, "colours=", 8) == 0)
-                  flag_colors = strarg(getloptarg(argc, argv, arg + 8, i));
+                  flag_colors = strarg(arg + 8);
                 else if (strcmp(arg, "column-number") == 0)
                   flag_column_number = true;
                 else if (strcmp(arg, "config") == 0 || strncmp(arg, "config=", 7) == 0)
@@ -5274,16 +5251,18 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                   flag_after_context = flag_before_context = strtonum(getloptarg(argc, argv, "", i), "invalid argument --context=");
                 else if (strncmp(arg, "context=", 8) == 0)
                   flag_after_context = flag_before_context = strtonum(getloptarg(argc, argv, arg + 8, i), "invalid argument --context=");
+                else if (strncmp(arg, "context-separator=", 18) == 0)
+                  flag_separator_dash = strarg(arg + 18);
                 else if (strcmp(arg, "count") == 0)
                   flag_count = true;
                 else if (strcmp(arg, "cpp") == 0)
                   flag_cpp = true;
                 else if (strcmp(arg, "csv") == 0)
                   flag_csv = true;
-                else if (strcmp(arg, "colors") == 0 || strcmp(arg, "colours") == 0)
+                else if (strcmp(arg, "colors") == 0 || strcmp(arg, "colours") == 0 || strcmp(arg, "context-separator") == 0)
                   usage("missing argument for --", arg);
                 else
-                  usage("invalid option --", arg, "--color, --colors=, --column-number, --config, --confirm, --context=, --count, --cpp or --csv");
+                  usage("invalid option --", arg, "--color, --colors=, --column-number, --config, --confirm, --context=, context-separator=, --count, --cpp or --csv");
                 break;
 
               case 'd':
@@ -5291,6 +5270,8 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                   flag_decompress = true;
                 else if (strncmp(arg, "delay=", 6) == 0)
                   flag_delay = strtonum(getloptarg(argc, argv, arg + 6, i), "invalid argument --delay=");
+                else if (strcmp(arg, "depth") == 0) // legacy form --depth NUM
+                  set_depth_long(getloptarg(argc, argv, "", i));
                 else if (strncmp(arg, "depth=", 6) == 0)
                   set_depth_long(getloptarg(argc, argv, arg + 6, i));
                 else if (strcmp(arg, "dereference") == 0)
@@ -5309,7 +5290,7 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                   flag_directories = strarg(getloptarg(argc, argv, arg + 12, i));
                 else if (strcmp(arg, "dotall") == 0)
                   flag_dotall = true;
-                else if (strcmp(arg, "delay") == 0 || strcmp(arg, "depth") == 0)
+                else if (strcmp(arg, "delay") == 0)
                   usage("missing argument for --", arg);
                 else
                   usage("invalid option --", arg, "--decompress, --delay=, --depth=, --dereference, --dereference-files, --dereference-recursive, --devices=, --directories= or --dotall");
@@ -5370,13 +5351,13 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                 else if (strncmp(arg, "format=", 7) == 0)
                   flag_format = strarg(getloptarg(argc, argv, arg + 7, i));
                 else if (strncmp(arg, "format-begin=", 13) == 0)
-                  flag_format_begin = strarg(getloptarg(argc, argv, arg + 13, i));
+                  flag_format_begin = strarg(arg + 13);
                 else if (strncmp(arg, "format-close=", 13) == 0)
-                  flag_format_close = strarg(getloptarg(argc, argv, arg + 13, i));
+                  flag_format_close = strarg(arg + 13);
                 else if (strncmp(arg, "format-end=", 11) == 0)
-                  flag_format_end = strarg(getloptarg(argc, argv, arg + 11, i));
+                  flag_format_end = strarg(arg + 11);
                 else if (strncmp(arg, "format-open=", 12) == 0)
-                  flag_format_open = strarg(getloptarg(argc, argv, arg + 12, i));
+                  flag_format_open = strarg(arg + 12);
                 else if (strcmp(arg, "fuzzy") == 0)
                   flag_fuzzy = 1;
                 else if (strncmp(arg, "fuzzy=", 6) == 0)
@@ -5406,7 +5387,7 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                 else if (strcmp(arg, "group-separator") == 0)
                   flag_group_separator = "--";
                 else if (strncmp(arg, "group-separator=", 16) == 0)
-                  flag_group_separator = strarg(getloptarg(argc, argv, arg + 16, i));
+                  flag_group_separator = strarg(arg + 16);
                 else if (strcmp(arg, "glob") == 0)
                   usage("missing argument for --", arg);
                 else
@@ -5423,11 +5404,11 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                 else if (strcmp(arg, "hexdump") == 0)
                   flag_hexdump = "2";
                 else if (strncmp(arg, "hexdump=", 8) == 0)
-                  flag_hexdump = strarg(getloptarg(argc, argv, arg + 8, i));
+                  flag_hexdump = strarg(arg + 8);
                 else if (strcmp(arg, "hidden") == 0)
                   flag_hidden = true;
                 else if (strncmp(arg, "hyperlink=", 10) == 0)
-                  flag_hyperlink = strarg(getloptarg(argc, argv, arg + 10, i));
+                  flag_hyperlink = strarg(arg + 10);
                 else if (strcmp(arg, "hyperlink") == 0)
                   flag_hyperlink = "";
                 else
@@ -5488,7 +5469,7 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                 if (strcmp(arg, "label") == 0) // legacy form --label LABEL
                   flag_label = strarg(getloptarg(argc, argv, "", i));
                 else if (strncmp(arg, "label=", 6) == 0)
-                  flag_label = strarg(getloptarg(argc, argv, arg + 6, i));
+                  flag_label = strarg(arg + 6);
                 else if (strcmp(arg, "line-buffered") == 0)
                   flag_line_buffered = true;
                 else if (strcmp(arg, "line-number") == 0)
@@ -5704,7 +5685,7 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                 else if (strcmp(arg, "separator") == 0)
                   flag_separator = NULL;
                 else if (strncmp(arg, "separator=", 10) == 0)
-                  flag_separator = strarg(getloptarg(argc, argv, arg + 10, i));
+                  flag_separator = strarg(arg + 10);
                 else if (strcmp(arg, "silent") == 0)
                   flag_quiet = flag_no_messages = true;
                 else if (strcmp(arg, "smart-case") == 0)
@@ -5718,7 +5699,7 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                 else if (strcmp(arg, "stats") == 0)
                   flag_stats = "";
                 else if (strncmp(arg, "stats=", 6) == 0)
-                  flag_stats = strarg(getloptarg(argc, argv, arg + 6, i));
+                  flag_stats = strarg(arg + 6);
                 else
                   usage("invalid option --", arg, "--save-config, --separator, --silent, --smart-case, --sort, --split or --stats");
                 break;
@@ -6537,8 +6518,8 @@ void init(int argc, const char **argv)
   {
     int context = 0;
 
-    flag_hex_after = (flag_after_context == 0);
-    flag_hex_before = (flag_before_context == 0);
+    flag_hex_after = flag_after_context + 1;
+    flag_hex_before = flag_before_context + 1;
 
     for (const char *s = flag_hexdump; *s != '\0'; ++s)
     {
@@ -6565,17 +6546,17 @@ void init(int argc, const char **argv)
           break;
 
         case 'A':
-          flag_hex_after = 0;
+          flag_hex_after = 2;
           context = 1;
           break;
 
         case 'B':
-          flag_hex_before = 0;
+          flag_hex_before = 2;
           context = 2;
           break;
 
         case 'C':
-          flag_hex_after = flag_hex_before = 0;
+          flag_hex_after = flag_hex_before = 2;
           context = 3;
           break;
 
@@ -6611,6 +6592,9 @@ void init(int argc, const char **argv)
     // enable option -X if -W is not enabled
     if (!flag_with_hex)
       flag_hex = true;
+
+    // disable -ABC line context to use hex binary context
+    flag_after_context = flag_before_context = 0;
   }
 
   // --hex takes priority over --with-hex takes priority over -I takes priority over -a
@@ -6880,15 +6864,16 @@ void init(int argc, const char **argv)
   else if (flag_xml)
   {
     flag_format_begin = "<grep>\n";
-    flag_format_open  = "  <file%[]$%[ name=]H>\n";
+    flag_format_open  = "  <file%[\"]$%[ name=\"]I>\n";
     flag_format       = "    <match%[\"]$%[ line=\"]N%[ column=\"]K%[ offset=\"]B>%X</match>\n%u";
     flag_format_close = "  </file>\n";
     flag_format_end   = "</grep>\n";
   }
   else if (flag_only_line_number)
   {
-    flag_format_open  = "%+";
-    flag_format       = "%F%n%s%K%B\n%u";
+    flag_format_open  = "%[fn]=%+%=";
+    flag_format       = "%[fn]=%F%=%[ln]=%n%=%[se]=%s%=%[cn]=%K%=%[bn]=%B%=\n%u";
+    flag_format_close = "%R";
   }
 
   // --replace clashes with --format
@@ -7062,7 +7047,9 @@ void init(int argc, const char **argv)
         // scan the type_table[] for the specified type, allowing type to be a prefix when unambiguous
         for (size_t j = 0; type_table[j].type != NULL; ++j)
         {
-          if (type.compare(0, size, type_table[j].type, size) == 0)
+          size_t typelen = strlen(type_table[j].type);
+
+          if (size <= typelen && type.compare(0, size, type_table[j].type, size) == 0)
           {
             // an ambiguous prefix is not a valid type
             if (found)
@@ -7072,7 +7059,7 @@ void init(int argc, const char **argv)
             i = j;
 
             // if full type match then we found a valid type match
-            if (strlen(type_table[j].type) == size)
+            if (size == typelen)
             {
               valid = true;
               break;
@@ -7080,7 +7067,7 @@ void init(int argc, const char **argv)
           }
         }
 
-        // if not found a valid type, then find an unambiguous type with the specified filename suffix 
+        // if not found a valid type, then find an unambiguous type with the specified filename suffix
         if (!found && valid)
         {
           for (size_t j = 0; type_table[j].type != NULL; ++j)
@@ -8044,16 +8031,15 @@ void ugrep()
   if (!flag_file.empty())
   {
     // -F: make newline-separated lines in regex literal with \Q and \E
-    const char *Q = flag_fixed_strings ? "\\Q" : "";
-    const char *E = flag_fixed_strings ? "\\E|" : flag_basic_regexp ? "\\|" : "|";
+    bool fixed_strings = flag_fixed_strings;
+    const char *bar = flag_basic_regexp ? "\\|" : "|";
 
     // PATTERN or -e PATTERN: add an ending '|' (or BRE '\|') to the regex to concatenate sub-expressions
     if (!regex.empty())
     {
       // -F does not apply to patterns in -f FILE when PATTERN or -e PATTERN is specified
-      Q = "";
-      E = flag_basic_regexp ? "\\|" : "|";
-      regex.append(E);
+      fixed_strings = false;
+      regex.append(bar);
     }
 
     // -f: read patterns from the specified file or files
@@ -8098,7 +8084,11 @@ void ugrep()
 
         // add line to the regex if not empty
         if (!line.empty())
-          regex.append(Q).append(line).append(E);
+        {
+          if (fixed_strings)
+            CNF::quote(line);
+          regex.append(line).append(bar);
+        }
       }
 
       if (file != stdin)
@@ -8139,32 +8129,8 @@ void ugrep()
         regex.pop_back();
     }
 
-    // -x or -w: apply to all -f FILE patterns
-    if (regex.empty())
-    {
-      // -x: empty regex matches empty lines with ^$
-      if (flag_line_regexp)
-        regex.assign("^$");
-    }
-    else
-    {
-      // -G requires \( \) instead of ( ) and -P requires (?<!\w) (?!\w) instead of \< and \>
-      const char *xleft = flag_basic_regexp ? "^\\(" : "^(?:";
-      const char *xright = flag_basic_regexp ? "\\)$" : ")$";
-#if defined(HAVE_PCRE2)
-      // PCRE2_EXTRA_MATCH_WORD does not work and \b(?:regex)\b is not correct anyway, so we roll out our own
-      const char *wleft = flag_perl_regexp ? "(?<!\\w)(?:" : NULL;
-      const char *wright = flag_perl_regexp ? ")(?!\\w)" : NULL;
-#else // Boost.Regex
-      const char *wleft = flag_perl_regexp ? "(?<![[:word:]])(?:" : NULL;
-      const char *wright = flag_perl_regexp ? ")(?![[:word:]])" : NULL;
-#endif
-
-      if (flag_line_regexp)
-        regex.insert(0, xleft).append(xright); // make the regex line-anchored
-      else if (flag_word_regexp && wleft != NULL && wright != NULL)
-        regex.insert(0, wleft).append(wright); // make the regex word-anchored (or done with matcher option W)
-    }
+    // -x or -w: add line or word anchors
+    CNF::anchor(regex);
   }
 
   // patterns ^, $ and ^$ are special cases to optimize for search
@@ -8792,7 +8758,7 @@ void ugrep()
   close_pager();
 }
 
-// perform a limited ugrep search on a single file with optional archive part and store up to num results in a vector, may throw an exception
+// perform a limited ugrep search on a single file with optional archive part and store up to num results in a vector, may throw an exception, used by the TUI
 void ugrep_find_text_preview(const char *filename, const char *partname, size_t from_lineno, size_t max, size_t& lineno, size_t& num, std::vector<std::string>& text)
 {
   // we can only return a text preview when the main search engine ugrep() already started and executes, or after it ends
@@ -8816,7 +8782,7 @@ void ugrep_find_text_preview(const char *filename, const char *partname, size_t 
   delete matcher;
 }
 
-// extract a part from an archive and send to a stream
+// extract a part from an archive and send to a stream, used by the TUI
 void ugrep_extract(const char *filename, const char *partname, FILE *output)
 {
   Grep grep(NULL, NULL, NULL);
@@ -11183,7 +11149,7 @@ void Grep::search(const char *pathname, uint16_t cost)
       }
       else if (flag_before_context == 0 && flag_after_context == 0 && !flag_any_line && !flag_invert_match)
       {
-        // options -ABC, -y, -v are not specified
+        // options -ABC, -y, -v are not specified, --hexdump context is supported (including with options -ABC)
 
         size_t lineno = 0;
         size_t matching = 0;
@@ -11204,6 +11170,10 @@ void Grep::search(const char *pathname, uint16_t cost)
         // register the event handler to update restline on buffer shift
         matcher->set_handler(&handler);
 
+        // --hexdump: keep -B NUM+1 before context times hex column bytes in the buffer when shifting
+        if (flag_hex_before > 0)
+          matcher->set_reserve(flag_hex_before * flag_hex_columns);
+
         // the rest of the matching line
         restline_data = NULL;
         restline_size = 0;
@@ -11222,6 +11192,8 @@ void Grep::search(const char *pathname, uint16_t cost)
                 if (flag_hex_after > 0)
                 {
                   size_t right = flag_hex_after * flag_hex_columns - ((restline_last - 1) % flag_hex_columns) - 1;
+                  if (restline_last + right > matcher->first())
+                    right = matcher->first() - restline_last;
                   if (right < restline_size)
                     restline_size = right;
                 }
@@ -11288,6 +11260,16 @@ void Grep::search(const char *pathname, uint16_t cost)
 
             binary = flag_hex || (flag_with_hex && is_binary(bol, eol - bol));
 
+            if (binary && (flag_hex_after > 0 || flag_hex_before > 0))
+            {
+              const char *aft = matcher->aft((flag_hex_after + flag_hex_before) * flag_hex_columns);
+              if (aft > eol)
+              {
+                eol = aft;
+                bol = matcher->bol(); // warning: bol() position may have shifted with aft()
+              }
+            }
+
             if (binfile || (binary && !flag_hex && !flag_with_hex))
             {
               if (flag_binary_without_match)
@@ -11326,7 +11308,21 @@ void Grep::search(const char *pathname, uint16_t cost)
             {
               if (flag_hex_before > 0)
               {
-                size_t left = (flag_hex_before - 1) * flag_hex_columns + (first % flag_hex_columns);
+                const char *bef = matcher->bef(flag_hex_before * flag_hex_columns);
+                if (bef < bol)
+                {
+                  bol =  bef;
+                  border = begin - bol;
+                }
+
+                size_t left = 0;
+                if (restline_last + restline_size < first)
+                {
+                  left = flag_hex_before * flag_hex_columns + (first % flag_hex_columns) - flag_hex_columns;
+                  if (restline_last + restline_size + left > first)
+                    left = first - (restline_last + restline_size);
+                }
+
                 if (begin > bol + left)
                 {
                   bol = begin - left;
@@ -11434,8 +11430,8 @@ void Grep::search(const char *pathname, uint16_t cost)
               }
             }
 
-            // no -u and no colors: if the match does not span more than one line, then skip to end of the line
-            if (!flag_ungroup && !colorize)
+            // no -u, no --hexdump and no colors: if the match does not span more than one line, then skip to end of the line
+            if (!flag_ungroup && !colorize && !(binary && (flag_hex_after > 0 || flag_hex_before > 0)))
               if (!flag_multiline && !matcher->at_bol())
                 if (!matcher->skip('\n'))
                   break;
@@ -11460,34 +11456,52 @@ void Grep::search(const char *pathname, uint16_t cost)
 
                 if (binary)
                 {
-                  if (flag_hex_after > 0 && flag_hex_before > 0)
+                  if (restline_data != NULL)
                   {
-                    size_t right = flag_hex_after * flag_hex_columns - ((restline_last - 1) % flag_hex_columns) - 1;
-                    if (right < first - restline_last)
+                    if (restline_last + restline_size > first)
+                      restline_size = first - restline_last;
+
+                    if (flag_hex_after > 0)
                     {
-                      out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, right);
-
-                      restline_data += right;
-                      restline_size -= right;
-                      restline_last += right;
-
-                      size_t left = (flag_hex_before - 1) * flag_hex_columns + (first % flag_hex_columns);
-
-                      if (left < first - restline_last)
+                      size_t right = flag_hex_after * flag_hex_columns - ((restline_last - 1) % flag_hex_columns) - 1;
+                      if (right < restline_size)
                       {
-                        if (!flag_no_header)
-                          out.header(pathname, partname, heading, current_lineno, matcher, first, flag_separator_bar, binary);
+                        out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, right);
 
-                        left = first - restline_last - left;
+                        restline_data += right;
+                        restline_size -= right;
+                        restline_last += right;
+                      }
+                      else
+                      {
+                        out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, restline_size);
 
-                        restline_data += left;
-                        restline_size -= left;
-                        restline_last += left;
+                        restline_data = NULL;
                       }
                     }
+
+                    if (restline_data != NULL)
+                    {
+                      if (flag_hex_before > 0)
+                      {
+                        size_t left = flag_hex_before * flag_hex_columns + (first % flag_hex_columns) - flag_hex_columns;
+                        if (left < restline_size)
+                        {
+                          if (!flag_no_header)
+                            out.header(pathname, partname, heading, current_lineno, matcher, first, flag_separator_bar, binary);
+
+                          restline_data = restline_data + restline_size - left;
+                          restline_last = restline_last + restline_size - left;
+                          restline_size = left;
+                        }
+                      }
+
+                      out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, restline_size);
+                    }
+
+                    restline_data = NULL;
                   }
 
-                  out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, first - restline_last);
                   out.dump.hex(Output::Dump::HEX_MATCH, first, begin, size);
                 }
                 else
@@ -11536,18 +11550,38 @@ void Grep::search(const char *pathname, uint16_t cost)
                   }
                 }
 
+                const char *eol = matcher->eol(true); // warning: call eol() before end()
+                const char *end = matcher->end();
+
                 if (lines == 1)
                 {
-                  restline_data += last - restline_last;
-                  restline_size -= last - restline_last;
+                  if (binary && (flag_hex_after > 0 || flag_hex_before > 0))
+                  {
+                    const char *aft = matcher->aft((flag_hex_after + flag_hex_before) * flag_hex_columns);
+                    if (aft > eol)
+                    {
+                      eol = aft;
+                      end = matcher->end(); // warning: end() position may have shifted with aft()
+                    }
+                  }
+
+                  restline_data = end;
+                  restline_size = eol - end;
                   restline_last = last;
                 }
                 else
                 {
-                  const char *eol = matcher->eol(true); // warning: call eol() before end()
-                  const char *end = matcher->end();
-
                   binary = flag_hex || (flag_with_hex && is_binary(end, eol - end));
+
+                  if (binary && (flag_hex_after > 0 || flag_hex_before > 0))
+                  {
+                    const char *aft = matcher->aft((flag_hex_after + flag_hex_before) * flag_hex_columns);
+                    if (aft > eol)
+                    {
+                      eol = aft;
+                      end = matcher->end(); // warning: end() position may have shifted with aft()
+                    }
+                  }
 
                   if (hex && !binary)
                     out.dump.done();
@@ -12239,13 +12273,6 @@ void Grep::search(const char *pathname, uint16_t cost)
             {
               if (binary)
               {
-                if (flag_hex_after > 0)
-                {
-                  size_t right = flag_hex_after * flag_hex_columns - ((restline_last - 1) % flag_hex_columns) - 1;
-                  if (right < restline_size)
-                    restline_size = right;
-                }
-
                 out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, restline_size);
               }
               else
@@ -12361,16 +12388,6 @@ void Grep::search(const char *pathname, uint16_t cost)
 
             if (binary)
             {
-              if (flag_hex_before > 0)
-              {
-                size_t left = (flag_hex_before - 1) * flag_hex_columns + (first % flag_hex_columns);
-                if (begin > bol + left)
-                {
-                  bol = begin - left;
-                  border = left;
-                }
-              }
-
               out.dump.hex(Output::Dump::HEX_LINE, first - border, bol, border);
               out.dump.hex(Output::Dump::HEX_MATCH, first, begin, size);
 
@@ -12492,7 +12509,9 @@ void Grep::search(const char *pathname, uint16_t cost)
 
                 if (binary)
                 {
-                  out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, first - restline_last);
+                  if (restline_data != NULL)
+                    out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, first - restline_last);
+
                   out.dump.hex(Output::Dump::HEX_MATCH, first, begin, size);
                 }
                 else
@@ -12615,13 +12634,6 @@ void Grep::search(const char *pathname, uint16_t cost)
         {
           if (binary)
           {
-            if (flag_hex_after > 0)
-            {
-              size_t right = flag_hex_after * flag_hex_columns - ((restline_last - 1) % flag_hex_columns) - 1;
-              if (right < restline_size)
-                restline_size = right;
-            }
-
             out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, restline_size);
           }
           else
@@ -13250,7 +13262,7 @@ exit_search:
     Stats::found_file();
 }
 
-// search input after lineno to populate a string vector with the matching line and lines after up to max lines
+// search input after lineno to populate a string vector with the matching line and lines after up to max lines. used by the TUI
 void Grep::find_text_preview(const char *filename, const char *findpart, size_t from_lineno, size_t max, size_t& lineno, size_t& num, std::vector<std::string>& text)
 {
   // no results yet
@@ -13334,7 +13346,7 @@ void Grep::find_text_preview(const char *filename, const char *findpart, size_t 
     continue;
 }
 
-// extract a part from an archive and send to a stream
+// extract a part from an archive and send to a stream, used by the TUI
 void Grep::extract(const char *filename, const char *findpart, FILE *output)
 {
   try
@@ -13423,7 +13435,7 @@ void trim(std::string& line)
     line.erase(pos, len - pos);
 }
 
-// trim path separators from an argv[] argument - important: modifies the argv[] string
+// trim path separators from an argv[] argument - important: modifies the argv[] string passed as arg
 void trim_pathname_arg(const char *arg)
 {
   // remove trailing path separators after the drive prefix and path, if any - note: this truncates argv[] strings
@@ -13610,7 +13622,7 @@ const char *getoptarg(int argc, const char **argv, const char *arg, int& i)
   return "";
 }
 
-// get long option argument after =
+// get required non-empty long option argument after =
 const char *getloptarg(int argc, const char **argv, const char *arg, int& i)
 {
   if (*arg != '\0')
@@ -14072,13 +14084,14 @@ void help(std::ostream& out)
             option -Z and `--help format' displays a list of --format fields.\n\
     --hexdump[=[1-8][a][bch][A[NUM]][B[NUM]][C[NUM]]]\n\
             Output matches in 1 to 8 columns of 8 hexadecimal octets.  The\n\
-            default is 2 columns or 16 octets per line.  Option `a' outputs a\n\
+            default is 2 columns or 16 octets per line.  Argument `a' outputs a\n\
             `*' for all hex lines that are identical to the previous hex line,\n\
             `b' removes all space breaks, `c' removes the character column, `h'\n\
-            removes hex spacing, `A' includes up to NUM hex lines after the\n\
-            match, `B' includes up to NUM hex lines before the match and `C'\n\
-            includes up to NUM hex lines.  When NUM is omitted, the matching\n\
-            line is included in the output.  See also options -U, -W and -X.\n\
+            removes hex spacing, `A' includes up to NUM hex lines after a\n\
+            match, `B' includes up to NUM hex lines before a match and `C'\n\
+            includes up to NUM hex lines before and after a match.  Arguments\n\
+            `A', `B' and `C' are the same as options -A, -B and -C when used\n\
+            with --hexdump.  See also options -U, -W and -X.\n\
     --hidden, -.\n\
             Search "
 #ifdef OS_WIN
@@ -14295,13 +14308,13 @@ void help(std::ostream& out)
             -e PATTERN, i.e. a PATTERN argument requires option -e.  Press F1\n\
             or CTRL-Z to view the help screen.  Press F2 or CTRL-Y to invoke a\n\
             command to view or edit the file shown at the top of the screen.\n\
-            The command can be specified with option --view, or defaults to\n\
-            environment variable PAGER when defined, or EDITOR.  Press Tab and\n\
-            Shift-Tab to navigate directories and to select a file to search.\n\
-            Press Enter to select lines to output.  Press ALT-l for option -l\n\
-            to list files, ALT-n for -n, etc.  Non-option commands include\n\
-            ALT-] to increase context and ALT-} to increase fuzzyness.  See\n\
-            also options --no-confirm, --delay, --split and --view.\n\
+            The command can be specified with option --view and defaults to\n\
+            environment variable PAGER when defined, or VISUAL or EDITOR.\n\
+            Press Tab or Shift-Tab to navigate directories and to select a file\n\
+            to search.  Press Enter to select lines to output.  Press ALT-l for\n\
+            option -l to list files, ALT-n for -n, etc.  Non-option commands\n\
+            include ALT-] to increase context and ALT-} to increase fuzzyness.\n\
+            See also options --no-confirm, --delay, --split and --view.\n\
     -q, --quiet, --silent\n\
             Quiet mode: suppress all output.  Only search a file until a match\n\
             has been found.\n\
@@ -14335,10 +14348,11 @@ void help(std::ostream& out)
             the saved configuration file.  A configuration file may be modified\n\
             manually to specify one or more config[=FILE] to indirectly load\n\
             the specified FILE, but recursive config loading is not allowed.\n\
-    --separator[=SEP]\n\
+    --separator[=SEP], --context-separator=SEP\n\
             Use SEP as field separator between file name, line number, column\n\
-            number, byte offset and the matched line.  The default is a colon\n\
-            (`:') and a bar (`|') for multi-line pattern matches.\n\
+            number, byte offset and the matched line.  The default separator is\n\
+            a colon (`:') and a bar (`|') for multi-line pattern matches, and a\n\
+            dash (`-') for context lines.  See also option --group-separator.\n\
     --split\n\
             Split the -Q query TUI screen on startup.\n\
     --sort[=KEY]\n\
@@ -14401,9 +14415,9 @@ void help(std::ostream& out)
             Use COMMAND to view/edit a file in -Q query TUI by pressing CTRL-Y.\n\
     -W, --with-hex\n\
             Output binary matches in hexadecimal, leaving text matches alone.\n\
-            This option is equivalent to the --binary-files=with-hex option\n\
-            with --hexdump=2C.  To omit the matching line from the hex output,\n\
-            combine option --hexdump with option -W.  See also option -U.\n\
+            This option is equivalent to the --binary-files=with-hex option.\n\
+            To omit the matching line from the hex output, use both options -W\n\
+            and --hexdump.  See also options -U.\n\
     -w, --word-regexp\n\
             The PATTERN is searched for as a word, such that the matching text\n\
             is preceded by a non-word character and is followed by a non-word\n\
@@ -14414,8 +14428,8 @@ void help(std::ostream& out)
             of the terminal window is used if NUM is not specified.  Note that\n\
             double wide characters in the output may result in wider lines.\n\
     -X, --hex\n\
-            Output matches in hexadecimal.  This option is equivalent to the\n\
-            --binary-files=hex option with --hexdump=2C.  To omit the matching\n\
+            Output matches and matching lines in hexadecimal.  This option is\n\
+            equivalent to the --binary-files=hex option.  To omit the matching\n\
             line from the hex output use option --hexdump.  See also option -U.\n\
     -x, --line-regexp\n\
             Select only those matches that exactly match the whole line, as if\n\
@@ -14611,43 +14625,70 @@ void help(const char *what)
 \n\
  field       output                      field       output\n\
  ----------  --------------------------  ----------  --------------------------\n\
- %a          basename                    %%          %\n\
- %b          byte offset                 %~          newline\n\
- %B %[...]B  ... + byte offset, if -b    %+          %F as heading/break, if -+\n\
- %c          matching pattern, as C/C++  %[...]<     ... if %m = 1\n\
- %C          matching line, as C/C++     %[...]>     ... if %m > 1\n\
- %d          byte size                   %,          , if %m > 1, same as %[,]>\n\
- %e          end offset                  %:          : if %m > 1, same as %[:]>\n\
- %f          pathname                    %;          ; if %m > 1, same as %[;]>\n\
- %F %[...]F  ... + pathname, if -H       %|          | if %m > 1, same as %[|]>\n\
- %h          \"pathname\"                  %[...]$     assign ... to separator\n\
- %H %[...]H  ... + \"pathname\", if -H     --------------------------------------\n\
- %j          matching pattern, as JSON   \n\
- %J          matching line, as JSON      \n\
- %k          line number                 \n\
- %K %[...]K  ... + column number, if -k  \n\
- %m          number of matches           Fields that require -P for captures:\n\
- %M          number of matching lines    \n\
- %n          line number                 field       output\n\
- %N %[...]N  ... + line number, if -n    ----------  --------------------------\n\
- %o          matching pattern, also %0   %1 %2...%9  group capture\n\
- %O          matching line               %[n]#       nth group capture\n\
- %p          path                        %[n]b       nth capture byte offset\n\
- %q          quoted matching pattern     %[n]d       nth capture byte size\n\
- %Q          quoted matching line        %[n]e       nth capture end offset\n\
- %s          separator, : by default     %[name]#    named group capture\n\
- %S %[...]S  ... + separator, if %m > 1  %[name]b    named capture byte offset\n\
- %t          tab                         %[name]d    named capture byte size\n\
- %T %[...]T  ... + tab, if -T            %[name]e    named capture end offset\n\
- %u          unique lines, unless -u     %[n|...]#   capture n,... that matched\n\
- %v          matching pattern, as CSV    %[n|...]b   capture n,... byte offset\n\
- %V          matching line, as CSV       %[n|...]d   capture n,... byte size\n\
- %w          match width in wide chars   %[n|...]e   capture n,... end offset\n\
- %x          matching pattern, as XML    %g          capture number or name\n\
- %X          matching line, as XML       %G          all capture numbers/names\n\
+ %%          %                           %[...]<     text ... if %m = 1\n\
+ %~          newline (LF or CRLF)        %[...]>     text ... if %m > 1\n\
+ %a          basename of matching file   %,          , if %m > 1, same as %[,]>\n\
+ %A          byte range in hex of match  %:          : if %m > 1, same as %[:]>\n\
+ %b          byte offset of a match      %;          ; if %m > 1, same as %[;]>\n\
+ %B %[...]B  ... + byte offset, if -b    %|          | if %m > 1, same as %[|]>\n\
+ %c          matching pattern as C/C++   %[...]$     assign ... to separator\n\
+ %C          matching line as C/C++      %$          reset to default separator\n\
+ %d          byte size of a match        %[ms]=...%= color of ms ... color off\n\
+ %e          end offset of a match       --------------------------------------\n\
+ %f          pathname of matching file   \n\
+ %F %[...]F  ... + pathname, if -H       \n\
+ %+          %F as heading/break, if -+  Fields that require -P for captures:\n\
+ %h          quoted \"pathname\"           \n\
+ %H %[...]H  ... + \"pathname\", if -H     field       output\n\
+ %i          pathname as XML             ----------  --------------------------\n\
+ %I %[...]I  ... + pathname XML, if -H   %1 %2...%9  group capture\n\
+ %j          matching pattern as JSON    %[n]#       nth group capture\n\
+ %J          matching line as JSON       %[n]b       nth capture byte offset\n\
+ %k          column number of a match    %[n]d       nth capture byte size\n\
+ %K %[...]K  ... + column number, if -k  %[n]e       nth capture end offset\n\
+ %l          last line number of match   %[n]j       nth capture as JSON\n\
+ %L          number of lines of a match  %[n]q       nth capture quoted\n\
+ %m          number of matches           %[n]v       nth capture as CSV\n\
+ %M          number of matching lines    %[n]x       nth capture as XML\n\
+ %n          line number of a match      %[n]y       nth capture as hex\n\
+ %N %[...]N  ... + line number, if -n    %[name]#    named group capture\n\
+ %o          matching pattern, also %0   %[name]b    named capture byte offset\n\
+ %O          matching line               %[name]d    named capture byte size\n\
+ %p          path to matching file       %[name]e    named capture end offset\n\
+ %q          quoted matching pattern     %[name]j    named capture as JSON\n\
+ %Q          quoted matching line        %[name]q    named capture quoted\n\
+ %R          newline, if --break         %[name]v    named capture as CSV\n\
+ %s          separator (: by default)    %[name]x    named capture as XML\n\
+ %S %[...]S  ... + separator, if %m > 1  %[name]y    named capture as hex\n\
+ %t          tab                         %[n|...]#   capture n,... that matched\n\
+ %T %[...]T  ... + tab, if -T            %[n|...]b   capture n,... byte offset\n\
+ %u          unique lines, unless -u     %[n|...]d   capture n,... byte size\n\
+ %[hhhh]U    U+hhhh Unicode code point   %[n|...]e   capture n,... end offset\n\
+ %v          matching pattern as CSV     %[n|...]j   capture n,... as JSON\n\
+ %V          matching line as CSV        %[n|...]q   capture n,... quoted\n\
+ %w          match width in wide chars   %[n|...]v   capture n,... as CSV\n\
+ %x          matching pattern as XML     %[n|...]x   capture n,... as XML\n\
+ %X          matching line as XML        %[n|...]y   capture n,... as hex\n\
+ %y          matching pattern as hex     %g          capture number or name\n\
+ %Y          matching line as hex        %G          all capture numbers/names\n\
  %z          path in archive             %[t|...]g   text t indexed by capture\n\
  %Z          edit distance cost, if -Z   %[t|...]G   all t indexed by captures\n\
  --------------------------------------  --------------------------------------\n\
+\n\
+Options -X and -W change the %o and %O fields to output hex and hex/text.\n\
+\n\
+Option -o changes the %O and %Q fields to output the match only.\n\
+\n\
+Options -c, -l and -o change the output of %C, %J, %V, %X and %Y accordingly.\n\
+\n\
+Numeric fields such as %n are padded with spaces when %{width}n is specified.\n\
+\n\
+Matching line fields such as %O are cut to width when %{width}O is specified or\n\
+when %{-width}O is specified to cut from the end of the line.\n\
+\n\
+Character context on a matching line before or after a match is output when\n\
+%{-width}o or %{+width}o is specified for match fields such as %o, where\n\
+%{width}o without a +/- sign cuts the match to the specified width.\n\
 \n\
 ";
     }
@@ -14674,32 +14715,33 @@ void help(const char *what)
  a{3}?       3 a's lazily                \\cZ         control character ^Z\n\
  a{3,}?      3 or more a's lazily        \\0          NUL\n\
  a{3,7}?     3 to 7 a's lazily           \\0ddd       octal character code ddd\n\
- --------------------------------------  \\xhh        hex character code hh\n\
-                                         \\x{hhhh}    Unicode code point U+hhhh\n\
- pattern     character classes           \\u{hhhh}    Unicode code point U+hhhh\n\
- ----------  --------------------------  --------------------------------------\n\
- [abc-e]     one character a,b,c,d,e     \n\
- [^abc-e]    one char not a,b,c,d,e,\\n   pattern     anchors and boundaries\n\
- [[:name:]]  one char in POSIX class:    ----------  --------------------------\n\
-    alnum      a-z,A-Z,0-9               ^           begin of line anchor\n\
-    alpha      a-z,A-Z                   $           end of line anchor\n\
-    ascii      ASCII char \\x00-\\x7f      \\A          begin of file anchor\n\
-    blank      space or tab              \\Z          end of file anchodr\n\
-    cntrl      control characters        \\b          word boundary\n\
-    digit      0-9                       \\B          non-word boundary\n\
-    graph      visible characters        \\<          start of word boundary\n\
-    lower      a-z                       \\>          end of word boundary\n\
-    print      visible chars and space   (?=...)     lookahead (-P)\n\
-    punct      punctuation characters    (?!...)     negative lookahead (-P)\n\
-    space      space,\\t,\\v,\\f,\\r         (?<=...)    lookbehind (-P)\n\
-    upper      A-Z                       (?<!...)    negative lookbehind (-P)\n\
-     word      a-z,A-Z,0-9,_             --------------------------------------\n\
+ a(b|cd?)    ab or ac or acd             \\xhh        hex character code hh\n\
+ --------------------------------------  \\x{hhhh}    Unicode code point U+hhhh\n\
+                                         \\u{hhhh}    Unicode code point U+hhhh\n\
+ pattern     character classes           --------------------------------------\n\
+ ----------  --------------------------  \n\
+ [abc-e]     one character a,b,c,d,e     pattern     anchors and boundaries\n\
+ [^abc-e]    one char not a,b,c,d,e,\\n   ----------  --------------------------\n\
+ [[:name:]]  one char in POSIX class:    ^           begin of line anchor\n\
+    alnum      a-z,A-Z,0-9               $           end of line anchor\n\
+    alpha      a-z,A-Z                   \\A          begin of file anchor\n\
+    ascii      ASCII char \\x00-\\x7f      \\Z          end of file anchodr\n\
+    blank      space or tab              \\b          word boundary\n\
+    cntrl      control characters        \\B          non-word boundary\n\
+    digit      0-9                       \\<          start of word boundary\n\
+    graph      visible characters        \\>          end of word boundary\n\
+    lower      a-z                       (?=...)     lookahead (-P)\n\
+    print      visible chars and space   (?!...)     negative lookahead (-P)\n\
+    punct      punctuation characters    (?<=...)    lookbehind (-P)\n\
+    space      space,\\t,\\v,\\f,\\r         (?<!...)    negative lookbehind (-P)\n\
+    upper      A-Z                       --------------------------------------\n\
+     word      a-z,A-Z,0-9,_             (-P): pattern requires option -P\n\
    xdigit      0-9,a-f,A-F               \n\
  \\p{class}   one character in class      pattern     grouping\n\
  \\P{class}   one char not in class       ----------  --------------------------\n\
- \\d          a digit                     (...)       capturing group (-P)\n\
- \\D          a non-digit                 (...)       non-capturing group\n\
- \\h          a space or tab              (?:...)     non-capturing group\n\
+ \\d          a digit                     (...)       non-capturing group\n\
+ \\D          a non-digit                 (...)       capturing group (-P)\n\
+ \\h          a space or tab              (?:...)     non-capturing group (-P)\n\
  \\H          not a space or tab          (?<X>...)   capturing, named X (-P)\n\
  \\s          a whitespace except \\n      \\1          matches group 1 (-P)\n\
  \\S          a non-whitespace            \\g{10}      matches group 10 (-P)\n\
@@ -14708,8 +14750,8 @@ void help(const char *what)
  --------------------------------------  --------------------------------------\n\
                                          (-P): pattern requires option -P\n\
 \n\
-Option -P enables Perl regex matching with Unicode patterns, Unicode word\n\
-boundary matching, lookarounds and capturing groups.\n\
+Option -P enables Perl regex matching with Unicode patterns, lookarounds and\n\
+capturing groups.\n\
 \n\
 Option -U disables full Unicode pattern matching: non-POSIX Unicode character\n\
 classes \\p{class} are disabled, ASCII, LATIN1 and binary regex patterns only.\n\
