@@ -38,7 +38,7 @@
 #define UGREP_HPP
 
 // DO NOT ALTER THIS LINE: updated by makemake.sh and we need it physically here for MSVC++ build from source
-#define UGREP_VERSION "7.0.2"
+#define UGREP_VERSION "7.1.0"
 
 // disable mmap because mmap is almost always slower than the file reading speed improvements since 3.0.0
 #define WITH_NO_MMAP
@@ -104,6 +104,30 @@ inline int pipe(int fd[2])
     fd[1] = _open_osfhandle(reinterpret_cast<intptr_t>(pipe_w), _O_WRONLY);
     return 0;
   }
+  errno = GetLastError();
+  return -1;
+}
+
+// POSIX pipe() emulation with inherited pipe handles for child processes (Windows specific)
+inline int pipe_inherit(int fd[2])
+{
+  HANDLE pipe_r = NULL;
+  HANDLE pipe_w = NULL;
+  SECURITY_ATTRIBUTES sa;
+  memset(&sa, 0, sizeof(SECURITY_ATTRIBUTES));
+  sa.nLength = sizeof(SECURITY_ATTRIBUTES); 
+  sa.bInheritHandle = TRUE; 
+  sa.lpSecurityDescriptor = NULL; 
+  if (CreatePipe(&pipe_r, &pipe_w, &sa, 0))
+  {
+    fd[0] = _open_osfhandle(reinterpret_cast<intptr_t>(pipe_r), _O_RDONLY);
+    fd[1] = _open_osfhandle(reinterpret_cast<intptr_t>(pipe_w), _O_WRONLY);
+    if (SetHandleInformation(reinterpret_cast<HANDLE>(_get_osfhandle(fd[0])), HANDLE_FLAG_INHERIT, 0))
+      return 0;
+    close(fd[0]);
+    close(fd[1]);
+  }
+  errno = GetLastError();
   return -1;
 }
 
@@ -132,8 +156,12 @@ inline std::string utf8_encode(const std::wstring &wstr)
   if (wstr.empty())
     return std::string();
   int size = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], static_cast<int>(wstr.size()), NULL, 0, NULL, NULL);
-  std::string str(size, 0);
-  WideCharToMultiByte(CP_UTF8, 0, &wstr[0], static_cast<int>(wstr.size()), &str[0], size, NULL, NULL);
+  std::string str;
+  if (size >= 0)
+  {
+    str.resize(size);
+    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], static_cast<int>(wstr.size()), &str[0], size, NULL, NULL);
+  }
   return str;
 }
 
@@ -143,8 +171,12 @@ inline std::wstring utf8_decode(const std::string &str)
   if (str.empty())
     return std::wstring();
   int size = MultiByteToWideChar(CP_UTF8, 0, &str[0], static_cast<int>(str.size()), NULL, 0);
-  std::wstring wstr(size, 0);
-  MultiByteToWideChar(CP_UTF8, 0, &str[0], static_cast<int>(str.size()), &wstr[0], size);
+  std::wstring wstr;
+  if (size >= 0)
+  {
+    wstr.resize(size);
+    MultiByteToWideChar(CP_UTF8, 0, &str[0], static_cast<int>(str.size()), &wstr[0], size);
+  }
   return wstr;
 }
 
@@ -158,6 +190,8 @@ inline int chdir(const char *path)
 inline char *getcwd0()
 {
   wchar_t *wcwd = _wgetcwd(NULL, 0);
+  if (wcwd == NULL)
+    return NULL;
   std::string cwd(utf8_encode(wcwd));
   free(wcwd);
   return strdup(cwd.c_str());

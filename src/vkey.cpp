@@ -138,21 +138,23 @@ int VKey::raw_in(int timeout)
   if (keybuf[0])
     return rot_keybuf();
 
-  switch (WaitForSingleObject(hConIn, timeout))
+  while (true)
   {
-    case WAIT_OBJECT_0:
-      if (!_kbhit())
-      {
+    switch (WaitForSingleObject(hConIn, timeout))
+    {
+      case WAIT_OBJECT_0:
+        if (_kbhit())
+          return raw_get();
+        // discard non-key-press event
         FlushConsoleInputBuffer(hConIn);
+        break;
+
+      case WAIT_TIMEOUT:
         return 0;
-      }
-      return raw_get();
 
-    case WAIT_TIMEOUT:
-      return 0;
-
-    default:
-      return EOF;
+      default:
+        return EOF;
+    }
   }
 }
 
@@ -265,25 +267,27 @@ int VKey::raw_in(int timeout)
   DWORD nread = 0;
   INPUT_RECORD rec;
 
-  switch (WaitForSingleObject(hConIn, timeout))
+  while (true)
   {
-    case WAIT_OBJECT_0:
-      if (PeekConsoleInputW(hConIn, &rec, 1, &nread) != 0 &&
-          nread == 1 &&
-          rec.EventType == KEY_EVENT &&
-          rec.Event.KeyEvent.bKeyDown)
-        return raw_get();
-  
-      // discard event
-      if (nread == 1)
-        ReadConsoleInputW(hConIn, &rec, 1, &nread);
-      return 0;
+    switch (WaitForSingleObject(hConIn, timeout))
+    {
+      case WAIT_OBJECT_0:
+        if (PeekConsoleInputW(hConIn, &rec, 1, &nread) != 0 &&
+            nread == 1 &&
+            rec.EventType == KEY_EVENT &&
+            rec.Event.KeyEvent.bKeyDown)
+          return raw_get();
+        // discard non-key-press event
+        if (nread == 1)
+          ReadConsoleInputW(hConIn, &rec, 1, &nread);
+        break;
 
-    case WAIT_TIMEOUT:
-      return 0;
+      case WAIT_TIMEOUT:
+        return 0;
 
-    default:
-      return EOF;
+      default:
+        return EOF;
+    }
   }
 }
 
@@ -293,25 +297,27 @@ bool VKey::poll(int timeout)
   DWORD nread = 0;
   INPUT_RECORD rec;
 
-  switch (WaitForSingleObject(hConIn, timeout))
+  while (true)
   {
-    case WAIT_OBJECT_0:
-      if (PeekConsoleInputW(hConIn, &rec, 1, &nread) != 0 &&
-          nread == 1 &&
-          rec.EventType == KEY_EVENT &&
-          rec.Event.KeyEvent.bKeyDown)
+    switch (WaitForSingleObject(hConIn, timeout))
+    {
+      case WAIT_OBJECT_0:
+        if (PeekConsoleInputW(hConIn, &rec, 1, &nread) != 0 &&
+            nread == 1 &&
+            rec.EventType == KEY_EVENT &&
+            rec.Event.KeyEvent.bKeyDown)
+          return true;
+        // discard non-key-press event
+        if (nread == 1)
+          ReadConsoleInputW(hConIn, &rec, 1, &nread);
+        break;
+
+      case WAIT_TIMEOUT:
+        return false;
+
+      default:
         return true;
-  
-      // discard event
-      if (nread == 1)
-        ReadConsoleInputW(hConIn, &rec, 1, &nread);
-      return 0;
-
-    case WAIT_TIMEOUT:
-      return false;
-
-    default:
-      return true;
+    }
   }
 }
 
@@ -774,14 +780,15 @@ bool VKey::setup(int mode)
   inMode |= ENABLE_WINDOW_INPUT;
 
 #ifdef VKEY_WIN
-  inMode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+  inMode |= ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS;
 #endif
 
   if (!SetConsoleMode(hConIn, inMode))
     return false;
 
 #ifdef CP_UTF8
-  SetConsoleCP(CP_UTF8);
+  oldOutputCP = GetConsoleOutputCP();
+  SetConsoleOutputCP(CP_UTF8);
 #endif
 
 #else
@@ -838,6 +845,10 @@ void VKey::cleanup()
     CloseHandle(hConIn);
   }
 
+#ifdef CP_UTF8
+  SetConsoleOutputCP(oldOutputCP);
+#endif
+
 #else
 
   tcsetattr(tty, TCSAFLUSH, &oldterm);
@@ -892,6 +903,7 @@ void VKey::map_fn_key(unsigned num, const char *keys)
 // Windows console state
 HANDLE VKey::hConIn;
 DWORD  VKey::oldInMode;
+UINT   VKey::oldOutputCP;
 
 #else
 

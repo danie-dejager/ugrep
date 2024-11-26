@@ -165,7 +165,7 @@ int Query::line_wsize()
   return num;
 }
 
-// draw a textual part of the query search line, this function is called by draw()
+// draw the textual part of the query search line, this function is called by draw()
 void Query::display(int col, int len)
 {
   const char *ptr = line_ptr(col);
@@ -176,10 +176,20 @@ void Query::display(int col, int len)
   bool list = false;
   bool braced = false;
   bool literal = false;
-  int prev = ' ';
+  int prev = -1;
   if (!Screen::mono)
   {
-    if (!flag_fixed_strings)
+    if (globbing_)
+    {
+      for (const char *look = line_; look < ptr; ++look)
+      {
+        if (*look == (list ? ']' : '['))
+          list = !list, look += (*look == '[') + (look[1] == '!' || look[1] == '^' || look[1] == '\\');
+        else if (*look == '\\')
+          ++look;
+      }
+    }
+    else if (!flag_fixed_strings)
     {
       for (const char *look = line_; look < ptr; ++look)
       {
@@ -256,7 +266,59 @@ void Query::display(int col, int len)
       }
       else if (!Screen::mono)
       {
-        if (!flag_fixed_strings)
+        if (globbing_)
+        {
+          if (ch == '[' && !list)
+          {
+            list = true;
+            Screen::put(ptr, next - ptr);
+            Screen::normal();
+            Screen::put(color_qm);
+            Screen::put(ch);
+            Screen::normal();
+            Screen::put(color_ql);
+            ptr = ++next;
+            next += (*next == '!' || *next == '^');
+            next += (*next == '\\');
+          }
+          else if (ch == ']' && list)
+          {
+            list = false;
+            Screen::put(ptr, next - ptr);
+            Screen::normal();
+            Screen::put(color_qm);
+            Screen::put(ch);
+            Screen::normal();
+            Screen::put(color_qr);
+            ptr = next + 1;
+          }
+          else if (strchr("!*,?^", ch) != NULL && !list)
+          {
+            if ((ch != '!' && ch != '^') || prev == ',' || prev == -1)
+            {
+              Screen::put(ptr, next - ptr);
+              Screen::normal();
+              Screen::put(color_qm);
+              Screen::put(ch);
+              Screen::normal();
+              Screen::put(color_qr);
+              ptr = next + 1;
+            }
+          }
+          else if (ch == '\\' && !list)
+          {
+            Screen::put(ptr, next - ptr);
+            Screen::normal();
+            Screen::put(color_ql);
+            Screen::put(ch);
+            if (next + 1 < end)
+              Screen::put(next[1]);
+            Screen::normal();
+            Screen::put(color_qr);
+            ptr = ++next + 1;
+          }
+        }
+        else if (!flag_fixed_strings)
         {
           if (ch == '[' && !list && !literal && !braced)
           {
@@ -352,14 +414,12 @@ void Query::display(int col, int len)
               Screen::put(color_qr);
             ptr = next + 1;
           }
-          else if (!literal && flag_fixed_strings)
+          else if (!literal)
           {
-            if (prev == ' ' || prev == '|' || prev == '(')
+            if (prev == ' ' || prev == '|' || prev == '(' || prev == -1)
             {
               if (ch == '-' ||
-                  ch == '|' ||
-                  (ch == '(' && strchr(next, ')') != NULL) ||
-                  ch == ')' ||
+                  (flag_fixed_strings && (ch == '(' || ch == ')' || ch == '|')) ||
                   strncmp(next, "AND ", 4) == 0 ||
                   strncmp(next, "OR ", 3) == 0 ||
                   strncmp(next, "NOT ", 4) == 0)
@@ -369,17 +429,17 @@ void Query::display(int col, int len)
                 Screen::put(color_qm);
                 ptr = next;
                 if (isalpha(ch))
-                  next += 2 + (next[2] != ' ');
+                  next += 1 + (next[2] != ' ');
+                Screen::put(ptr, next - ptr + 1);
+                Screen::normal();
+                Screen::put(color_qr);
+                ptr = next + 1;
                 ch = ' ';
               }
-              else
-              {
-                Screen::put(ptr, next - ptr);
-                Screen::normal();
-                ptr = next;
-              }
             }
-            else if (ch == '|' || (ch == ')' && (next + 1 >= end || next[1] == ' ' || next[1] == '|' || next[1] == ')')))
+            else if (flag_fixed_strings &&
+                (ch == '|' ||
+                 (ch == ')' && (next + 1 >= end || next[1] == ' ' || next[1] == '|' || next[1] == ')'))))
             {
               Screen::put(ptr, next - ptr);
               Screen::normal();
@@ -419,7 +479,7 @@ void Query::draw()
       Screen::normal();
       Screen::put(down);
 
-      start_ = strlen(down);
+      start_ = static_cast<int>(strlen(down));
     }
 
     if (select_ == -1)
@@ -2093,13 +2153,12 @@ void Query::back()
 
   if (compare_dir && flag_tree)
   {
-    if (ref == 0)
-      return;
-
-    --ref;
-
-    while (ref > 0 && view_[ref].size() > 1)
-      --ref;
+    if (ref > 0)
+    {
+      do
+        --ref;
+      while (ref > 0 && view_[ref].size() > 1);
+    }
   }
   else
   {
@@ -2421,13 +2480,22 @@ void Query::view()
 
     if (found)
     {
+
+      Screen::clear();
+      Screen::put("Waiting on ");
+      Screen::put(command.c_str());
+      Screen::put(" to finish");
+      Screen::home();
+
       // -n: add +line_number
       if (line_number > 0)
         command.append(" +").append(std::to_string(line_number));
 
-      Screen::clear();
-
       FILE *pager = NULL;
+
+#ifdef OS_WIN
+      std::wstring wcommand;
+#endif
 
       if (flag_stdin && filename == flag_label)
       {
@@ -2463,12 +2531,35 @@ void Query::view()
       }
       else
       {
-        // view file in the pager
+        // view file in the pager using system() call
         command.append(" \"").append(filename).append("\"");
+
+#ifdef OS_WIN
+        // Windows system() does not support non-ASCII, instead we use a wide string with _wsystem()
+        wcommand = utf8_decode(command);
+
+        // flush before calling _wsystem(), according to the Window's system API documentation
+        // _flushall(); removed because this may cause the TUI to freeze
+#endif
       }
 
-      // pipe to pager was OK or execute the command
-      if ((flag_stdin && filename == flag_label) || !partname.empty() ? pager != NULL : system(command.c_str()) == 0)
+      // pipe to pager was OK or executing the command is OK
+      bool ok;
+
+      if ((flag_stdin && filename == flag_label) || !partname.empty())
+      {
+        ok = (pager != NULL);
+      }
+      else
+      {
+#ifdef OS_WIN
+        ok = (_wsystem(wcommand.c_str()) == 0);
+#else
+        ok = (system(command.c_str()) == 0);
+#endif
+      }
+
+      if (ok)
       {
 #ifdef OS_WIN
         if (strcmp(flag_view, "more") == 0)
@@ -2720,6 +2811,12 @@ void Query::select()
     history_.emplace();
     history_.top().save(line_, col_, row_, flags_, mark_);
 
+    if (flag_directories_action != Action::RECURSE)
+    {
+      flags_[18].flag = flag_dereference;
+      flags_[19].flag = !flag_dereference;
+    }
+
     mark_.reset();
 
     size_t n = pathname.find(PATHSEPCHR, 1); // ignore PATHSEPCHR at front when present
@@ -2779,7 +2876,7 @@ void Query::deselect()
       return;
     }
 
-    if (selected_file_.empty() && !Static::arg_files.empty())
+    if (!Static::arg_files.empty())
     {
       message("cannot chdir .. because file or directory arguments are present");
       return;
@@ -3014,7 +3111,7 @@ bool Query::help()
   bool ctrl_o = false; // CTRL-O is pressed
   bool restart = false; // META key pressed, restart search when exiting the help screen
 
-  while (true)
+  while (mode_ == Mode::HELP)
   {
     int key;
 
@@ -3374,6 +3471,13 @@ void Query::meta(int key)
 
       if (key == 'g')
       {
+        if (mode_ != Mode::QUERY && !globbing_)
+        {
+          mode_ = Mode::QUERY;
+          Screen::clear();
+          redraw();
+        }
+        
         if (mode_ == Mode::QUERY)
         {
           if (!globbing_)
@@ -3407,7 +3511,7 @@ void Query::meta(int key)
         }
         else
         {
-          message("\033[7mM-g\033[m GLOBS should be entered in the query view screen, \033[7mESC\033[m to go back\033[m");
+          mode_ = Mode::QUERY;
         }
       }
 #if !defined(HAVE_PCRE2) && !defined(HAVE_BOOST_REGEX)

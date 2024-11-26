@@ -1,4 +1,4 @@
-.TH UGREP "1" "October 27, 2024" "ugrep 7.0.2" "User Commands"
+.TH UGREP "1" "November 19, 2024" "ugrep 7.1.0" "User Commands"
 .SH NAME
 \fBugrep\fR, \fBug\fR -- file pattern searcher
 .SH SYNOPSIS
@@ -385,15 +385,15 @@ patterns; thus nothing is matched.  This option may be repeated.
 .TP
 \fB\-\-filter\fR=\fICOMMANDS\fR
 Filter files through the specified COMMANDS first before searching.
-COMMANDS is a comma\-separated list of `exts:command [option ...]',
+COMMANDS is a comma\-separated list of `exts:command arguments',
 where `exts' is a comma\-separated list of filename extensions and
 `command' is a filter utility.  Files matching one of `exts' are
-filtered.  When `exts' is a `*', all files are filtered.  One or
-more `option' separated by spacing may be specified, which are
-passed verbatim to the command.  A `%' as `option' expands into the
-pathname to search.  For example, \fB\-\-filter\fR='pdf:pdftotext % \-'
+filtered.  A `*' matches any file.  The specified `command' may
+include arguments separated by spaces.  An argument may be quoted
+to include spacing, commas or a `%'.  A `%' argument expands into
+the pathname to search.  For example, \fB\-\-filter\fR='pdf:pdftotext % \-'
 searches PDF files.  The `%' expands into a `\-' when searching
-standard input.  When a `%' is not specified, a filter utility
+standard input.  When a `%' is not specified, the filter command
 should read from standard input and write to standard output.
 Option \fB\-\-label\fR=.ext may be used to specify extension `ext' when
 searching standard input.  This option may be repeated.
@@ -817,7 +817,7 @@ repeated.  The possible file types can be (\fB\-t\fRlist displays a list):
 .TP
 \fB\-\-tabs\fR[=\fINUM\fR]
 Set the tab size to NUM to expand tabs for option \fB\-k\fR.  The value of
-NUM may be 1, 2, 4, or 8.  The default tab size is 8.
+NUM may be 1 (no expansion), 2, 4, or 8.  The default size is 8.
 .TP
 \fB\-\-tag\fR[=\fITAG\fR[,\fIEND\fR]]
 Disables colors to mark up matches with TAG.  END marks the end of
