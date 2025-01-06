@@ -146,15 +146,15 @@ class zstreambuf : public std::streambuf {
         viifree(viizip);
       }
 
-      // next 7zip file to decompress and get its info, return 0 if OK, if none return 1 or -1 on error
-      int get(std::string& name, time_t& mtime, uint64_t& usize)
+      // next 7zip file to decompress and get its ZipInfo, return 0 if OK, if none return 1 or -1 on error
+      int get(ZipInfo& zipinfo)
       {
         char buf[PATH_MAX];
-        int res = viiget(viizip, buf, PATH_MAX, &mtime, &usize);
+        int res = viiget(viizip, buf, PATH_MAX, &zipinfo.mtime, &zipinfo.usize);
         if (res)
           return res;
 
-        name.assign(buf);
+        zipinfo.name.assign(buf);
 
         return 0;
       }
@@ -260,7 +260,7 @@ class zstreambuf : public std::streambuf {
         if (!znew_)
           return true;
 
-        int res = sz_strm_->get(name, mtime, usize);
+        int res = sz_strm_->get(*this);
         if (res < 0)
         {
           cannot_decompress(pathname_, "corrupt 7zip archive");
@@ -1199,7 +1199,7 @@ class zstreambuf : public std::streambuf {
         file_ = NULL;
       }
 #else
-      cannot_decompress("unsupported compression format", pathname);
+      cannot_decompress(pathname, "unsupported compression format");
       file_ = NULL;
 #endif
     }
@@ -1227,7 +1227,7 @@ class zstreambuf : public std::streambuf {
         file_ = NULL;
       }
 #else
-      cannot_decompress("unsupported compression format", pathname);
+      cannot_decompress(pathname, "unsupported compression format");
       file_ = NULL;
 #endif
     }
@@ -1254,7 +1254,7 @@ class zstreambuf : public std::streambuf {
         file_ = NULL;
       }
 #else
-      cannot_decompress("unsupported compression format", pathname);
+      cannot_decompress(pathname, "unsupported compression format");
       file_ = NULL;
 #endif
     }
@@ -1281,7 +1281,7 @@ class zstreambuf : public std::streambuf {
         file_ = NULL;
       }
 #else
-      cannot_decompress("unsupported compression format", pathname);
+      cannot_decompress(pathname, "unsupported compression format");
       file_ = NULL;
 #endif
     }
@@ -1308,7 +1308,7 @@ class zstreambuf : public std::streambuf {
         file_ = NULL;
       }
 #else
-      cannot_decompress("unsupported compression format", pathname);
+      cannot_decompress(pathname, "unsupported compression format");
       file_ = NULL;
 #endif
     }
@@ -1354,7 +1354,7 @@ class zstreambuf : public std::streambuf {
         file_ = NULL;
       }
 #else
-      cannot_decompress("unsupported compression format", pathname);
+      cannot_decompress(pathname, "unsupported compression format");
       file_ = NULL;
 #endif
     }
@@ -1371,7 +1371,7 @@ class zstreambuf : public std::streambuf {
       catch (const std::invalid_argument&)
       {
         /* non-seekable and password-protected 7zip files cannot be decompressed */
-        cannot_decompress("7zip archive: encrypted data or 7z input is not seekable", pathname);
+        cannot_decompress(pathname, "7zip archive: encrypted data or 7z input is not seekable");
         file_ = NULL;
       }
 
@@ -1387,14 +1387,14 @@ class zstreambuf : public std::streambuf {
         file_ = NULL;
       }
 #else
-      cannot_decompress("unsupported compression format", pathname);
+      cannot_decompress(pathname, "unsupported compression format");
       file_ = NULL;
 #endif
     }
     else if (is_rar(pathname))
     {
       // perhaps RAR can be supported sometime in the future?
-      cannot_decompress("unsupported compression format", pathname);
+      cannot_decompress(pathname, "unsupported compression format");
       file_ = NULL;
     }
     else
@@ -1759,7 +1759,10 @@ class zstreambuf : public std::streambuf {
         zloc(0),
         zlen(0),
         zcrc(0)
-    { }
+    {
+      if (buf == NULL || zbuf == NULL)
+        throw std::bad_alloc();
+    }
 
     ~LZ4()
     {
@@ -1808,7 +1811,10 @@ class zstreambuf : public std::streambuf {
         zloc(0),
         zlen(0),
         zend(false)
-    { }
+    {
+      if (zbuf == NULL)
+        throw std::bad_alloc();
+    }
 
     ~ZSTD()
     {
@@ -1891,7 +1897,10 @@ class zstreambuf : public std::streambuf {
         buf(static_cast<uint8_t*>(malloc(max))),
         loc(0),
         len(0)
-    { }
+    {
+      if (buf == NULL)
+        throw std::bad_alloc();
+    }
 
     ~BZ3()
     {
@@ -2626,7 +2635,7 @@ class zstreambuf : public std::streambuf {
         if (block_size > bz3file_->max ||
             bz3file_->len > bz3file_->max ||
             fread(bz3file_->buf, 1, block_size, file_) < block_size ||
-            bz3_decode_block(bz3file_->strm, bz3file_->buf, block_size, bz3file_->len) < 0)
+            bz3_decode_block(bz3file_->strm, bz3file_->buf, bz3file_->max, block_size, bz3file_->len) < 0)
         {
           if (ferror(file_))
             warning("cannot read", pathname_);
