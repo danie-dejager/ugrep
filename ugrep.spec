@@ -45,6 +45,11 @@ etc.  A faster, user-friendly and compatible grep replacement.
 %{_mandir}/man1/ug.1*
 %{_mandir}/man1/ugrep.1*
 %{_datadir}/ugrep
+%{_bindir}/ugrep-indexer
+%{_datadir}/bash-completion/completions/ugrep-indexer
+%{_datadir}/fish/vendor_completions.d/ugrep-indexer.fish
+%{_mandir}/man1/ugrep-indexer.1.gz
+%{_datadir}/zsh/site-functions/_ugrep-indexer
 /usr/share/bash-completion/completions/ug
 /usr/share/bash-completion/completions/ug+
 /usr/share/bash-completion/completions/ugrep
