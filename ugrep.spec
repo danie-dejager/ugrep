@@ -1,5 +1,5 @@
 Name:           ugrep
-Version:        7.4.2
+Version:        7.4.3
 Release:        1%{?dist}
 Summary:        Faster, user-friendly, and compatible grep replacement
 License:        BSD-3-Clause
@@ -64,6 +64,7 @@ etc.  A faster, user-friendly and compatible grep replacement.
 /usr/share/zsh/site-functions/_ugrep+
 
 %changelog
+* Sun May 18 2025 - Danie de Jager - 7.4.3-1
 * Wed Apr 30 2025 - Danie de Jager - 7.4.2-1
 * Fri Apr 25 2025 - Danie de Jager - 7.4.1-1
 * Wed Jul 17 2024 - Danie de Jager - 6.2.0-1
