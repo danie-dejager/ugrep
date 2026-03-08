@@ -1,6 +1,6 @@
 Name:           ugrep
-Version:        7.5.0
-Release:        2%{?dist}
+Version:        7.6.0
+Release:        1%{?dist}
 Summary:        Faster, user-friendly, and compatible grep replacement
 License:        BSD-3-Clause
 URL:            https://github.com/Genivia/ugrep
@@ -64,6 +64,7 @@ etc.  A faster, user-friendly and compatible grep replacement.
 /usr/share/zsh/site-functions/_ugrep+
 
 %changelog
+* Sun Mar 8 2026 - Danie de Jager - 7.6.0-1
 * Sat Sep 13 2025 - Danie de Jager - 7.5.0-2
 * Sun Jul 6 2025 - Danie de Jager - 7.5.0-1
 * Sun May 18 2025 - Danie de Jager - 7.4.3-1
