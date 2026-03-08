@@ -388,11 +388,13 @@ size_t flag_max_count              = 0;
 size_t flag_max_depth              = 0;
 size_t flag_max_files              = 0;
 size_t flag_max_line               = 0;
+size_t flag_max_size               = 0;
 size_t flag_max_mmap               = DEFAULT_MAX_MMAP_SIZE;
 size_t flag_max_queue              = DEFAULT_MAX_JOB_QUEUE_SIZE;
 size_t flag_min_count              = 0;
 size_t flag_min_depth              = 0;
 size_t flag_min_line               = 0;
+size_t flag_min_size               = 0;
 size_t flag_min_magic              = 1;
 size_t flag_min_steal              = MIN_STEAL;
 size_t flag_not_magic              = 0;
@@ -481,8 +483,9 @@ const char *strarg(const char *string);
 size_t strtonum(const char *string, const char *message);
 size_t strtopos(const char *string, const char *message);
 void strtopos2(const char *string, size_t& pos1, size_t& pos2, const char *message);
+size_t strtosize(const char *string, const char *message);
 size_t strtofuzzy(const char *string, const char *message);
-void import_globs(FILE *file, std::vector<std::string>& files, std::vector<std::string>& dirs, bool gitignore = false);
+void import_globs(FILE *file, std::vector<std::string>& files, std::vector<std::string>& dirs, bool gitignore = false, const char *pathname = NULL);
 void usage(const char *message, const char *arg = NULL, const char *valid = NULL);
 void help(std::ostream& out);
 void help(const char *what = NULL);
@@ -754,7 +757,7 @@ inline void copy_color(char to[COLORLEN], const char from[COLORLEN])
 #ifdef HAVE_LIBZ
 #ifdef WITH_DECOMPRESSION_THREAD
 
-// decompression thread state with shared objects
+// decompression thread state with shared objects (similar code to zthread.hpp, but with ugrep-related mods)
 struct Zthread {
 
   Zthread(bool is_chained, std::string& partname) :
@@ -1296,8 +1299,14 @@ struct Zthread {
           }
           else
           {
-            buf[136] = '\0';
-            size = strtoull(reinterpret_cast<const char*>(buf + 124), NULL, 8);
+            // v7/ustar size stored in 11 octal digits padded with leading zeros or spaces followed by a space or NUL
+            char *octal = reinterpret_cast<char*>(buf + 124);
+            buf[135] = '\0';
+            size = strtoull(octal, &octal, 8);
+            // we could be festidious about zero size when tar/pax is corrupted,
+            // but it's not an issue to report it as a "binary file" mess when that happens
+            // if (size == 0 && *octal != ' ' && *octal != '\0')
+            //   break;
           }
 
           // header types
@@ -1884,7 +1893,7 @@ struct Zthread {
   std::atomic_bool        stop;          // true if decompression thread should stop (cancel search)
   volatile bool           is_extracting; // true if extracting files from TAR or ZIP archive (no concurrent r/w)
   volatile bool           is_waiting;    // true if decompression thread is waiting (no concurrent r/w)
-  volatile bool           is_assigned;   // true when partnameref was assigned
+  volatile bool           is_assigned;   // true when partnameref was assigned (no concurrent r/w)
   int                     pipe_fd[2];    // decompressed stream pipe
   std::mutex              pipe_mutex;    // mutex to extract files in thread
   std::condition_variable pipe_zstrm;    // cv to control new pipe creation
@@ -2262,7 +2271,7 @@ struct Grep {
 
 #ifndef OS_WIN
 
-  // extend the reflex::Input::Handler to handle nonblocking stdin from a character device (TTY) or from a pipe
+  // extend the reflex::Input::Handler to handle non-blocking input from a character device (TTY) or from a pipe
   struct StdInHandler : public reflex::Input::Handler {
 
     StdInHandler(Grep& grep)
@@ -3446,23 +3455,27 @@ struct Grep {
       return false;
     }
 
-#if !defined(OS_WIN) && !defined(__APPLE__)
-    if (file_in != stdin && file_in != Static::source)
-    {
-      // recursive searches and -Dskip should not block on devices and special "empty" regular files like in /proc and /sys
-      if (flag_directories_action == Action::RECURSE || flag_devices_action != Action::READ)
-      {
-        int fd = fileno(file_in);
-        int fl = fcntl(fd, F_GETFL);
-        if (fl >= 0)
-          fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-      }
-    }
-#endif
+    // "interactive" means possibly slow input from a TTY or pipe
+    interactive = false;
 
     // --filter: fork process to filter file, when applicable
     if (!filter(file_in, pathname))
       return false;
+
+#if defined(__linux__)
+    if (file_in != stdin && file_in != Static::source)
+    {
+      // Linux has system "regular files" that can be set non-blocking to raise EAGAIN e.g. for /proc and /sys files
+      if (flag_devices_action != Action::READ)
+      {
+        int fd = fileno(file_in);
+        struct stat buf;
+
+        if (fstat(fd, &buf) == 0 && S_ISREG(buf.st_mode))
+          fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+      }
+    }
+#endif
 
 #ifdef HAVE_LIBZ
     if (flag_decompress)
@@ -3506,6 +3519,22 @@ struct Grep {
 #else
     (void)find; // appease -Wunused
     input = reflex::Input(file_in, flag_encoding_type);
+#endif
+
+#ifndef OS_WIN
+    if (!flag_decompress && !flag_quiet && !flag_files_with_matches && !flag_count)
+    {
+      int fd = fileno(file_in);
+      struct stat buf;
+
+      // if input is a character device (e.g. TTY) or a pipe, then make it non-blocking and register a stdin handler to continue reading and flush results to output, don't check for invalid Unicode input
+      if (fstat(fd, &buf) == 0 && (S_ISCHR(buf.st_mode) || S_ISFIFO(buf.st_mode) || S_ISSOCK(buf.st_mode)))
+        interactive = (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) != -1);
+    }
+#else
+    // for Windows we don't check for invalid Unicode input, no stdin handler
+    if (input == stdin && !flag_quiet && !flag_files_with_matches && !flag_count)
+      interactive = true;
 #endif
 
     return true;
@@ -3820,35 +3849,9 @@ struct Grep {
   // close the file and clear input, return true if next file is extracted from an archive to search
   bool close_file(const char *pathname)
   {
-    // check if the input has no error conditions, but do not check stdin which is nonblocking and handled differently
+    // check if the input has an error condition, but do not check stdin which is handled differently
     if (file_in != NULL && file_in != stdin && file_in != Static::source && ferror(file_in))
-    {
       warning("cannot read", pathname);
-
-#ifdef HAVE_LIBZ
-#ifdef WITH_DECOMPRESSION_THREAD
-      if (flag_decompress)
-        zthread.cancel();
-#else
-      if (stream != NULL)
-      {
-        delete stream;
-        stream = NULL;
-      }
-#endif
-#endif
-
-      // close the current input file
-      if (file_in != NULL && file_in != stdin && file_in != Static::source)
-      {
-        fclose(file_in);
-        file_in = NULL;
-      }
-
-      input.clear();
-
-      return false;
-    }
 
 #ifdef HAVE_LIBZ
 #ifdef WITH_DECOMPRESSION_THREAD
@@ -3870,6 +3873,7 @@ struct Grep {
 
       // open pipe to the next file or part in an archive if there is a next file to extract
       FILE *pipe_in = zthread.open_next(pathname);
+
       if (pipe_in != NULL)
       {
         // assign the next extracted file as input to search
@@ -3927,9 +3931,6 @@ struct Grep {
     matches = 0;
     stop = false;
 
-    // "interactive" and possibly slow input from a standard input device or pipe
-    bool interactive = false;
-
     const char *base;
     size_t size;
 
@@ -3954,22 +3955,9 @@ struct Grep {
 #endif
 
 #ifndef OS_WIN
-      if (input == stdin && !flag_quiet && !flag_files_with_matches && !flag_count)
-      {
-        struct stat buf;
-
-        // if input is a character device (e.g. TTY) or a pipe, then make stdin nonblocking and register a stdin handler to continue reading and flush results to output, don't check for invalid Unicode input
-        if (fstat(0, &buf) == 0 && (S_ISCHR(buf.st_mode) || S_ISFIFO(buf.st_mode)  | S_ISSOCK(buf.st_mode)))
-        {
-          interactive = (fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK) != -1);
-          if (interactive)
-            matcher->in.set_handler(&stdin_handler);
-        }
-      }
-#else
-      // for Windows we don't check for invalid Unicode input, no stdin handler
-      if (input == stdin && !flag_quiet && !flag_files_with_matches && !flag_count)
-        interactive = true;
+        // set interactive search handler e.g. for slow stdin input
+        if (interactive)
+          matcher->in.set_handler(&stdin_handler);
 #endif
     }
 
@@ -4093,6 +4081,7 @@ struct Grep {
   MMap                           mmap;          // mmap state
   reflex::Input                  input;         // input to the matcher
   FILE                          *file_in;       // the current input file
+  bool                           interactive;   // the file being searched is a TTY or pipe
   bool                           binfile;       // the file being searched is a binary file
   size_t                         lineno;        // the line number of the last match
   bool                           heading;       // heading on/off, initially set to --with-filename
@@ -4101,7 +4090,7 @@ struct Grep {
   size_t                         matches;       // number of matches
   bool                           stop;          // stop searching when --max-files max reached
 #ifndef OS_WIN
-  StdInHandler                   stdin_handler; // a handler to handle nonblocking stdin from a TTY or a slow pipe
+  StdInHandler                   stdin_handler; // a handler to handle non-blocking input from a TTY or a slow pipe
 #endif
 #ifdef HAVE_LIBZ
 #ifdef WITH_DECOMPRESSION_THREAD
@@ -5436,7 +5425,7 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                 else if (strcmp(arg, "glob-ignore-case") == 0)
                   flag_glob_ignore_case = true;
                 else if (strcmp(arg, "grep") == 0)
-                  flag_grep = true;
+                  flag_empty = flag_grep = true;
                 else if (strcmp(arg, "group-separator") == 0)
                   flag_group_separator = "--";
                 else if (strncmp(arg, "group-separator=", 16) == 0)
@@ -5546,6 +5535,8 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                   flag_max_files = strtopos(getloptarg(argc, argv, arg + 10, i), "invalid argument --max-files=");
                 else if (strncmp(arg, "max-line=", 9) == 0)
                   flag_max_line = strtopos(getloptarg(argc, argv, arg + 9, i), "invalid argument --max-line=");
+                else if (strncmp(arg, "max-size=", 9) == 0)
+                  flag_max_size = strtosize(getloptarg(argc, argv, arg + 9, i), "invalid argument --max-size=");
                 else if (strncmp(arg, "max-queue=", 10) == 0)
                   flag_max_queue = strtopos(getloptarg(argc, argv, arg + 10, i), "invalid argument --max-queue=");
                 else if (strncmp(arg, "min-count=", 10) == 0)
@@ -5554,6 +5545,8 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                   flag_min_depth = strtopos(getloptarg(argc, argv, arg + 10, i), "invalid argument --min-depth=");
                 else if (strncmp(arg, "min-line=", 9) == 0)
                   flag_min_line = strtopos(getloptarg(argc, argv, arg + 9, i), "invalid argument --min-line=");
+                else if (strncmp(arg, "min-size=", 9) == 0)
+                  flag_min_size = strtosize(getloptarg(argc, argv, arg + 9, i), "invalid argument --min-size=");
                 else if (strncmp(arg, "min-steal=", 10) == 0)
                   flag_min_steal = strtopos(getloptarg(argc, argv, arg + 10, i), "invalid argument --min-steal=");
                 else if (strcmp(arg, "mmap") == 0)
@@ -5566,12 +5559,14 @@ void options(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_args, int a
                     strcmp(arg, "max-depth") == 0 ||
                     strcmp(arg, "max-files") == 0 ||
                     strcmp(arg, "max-line") == 0 ||
+                    strcmp(arg, "max-size") == 0 ||
                     strcmp(arg, "min-count") == 0 ||
                     strcmp(arg, "min-depth") == 0 ||
-                    strcmp(arg, "min-line") == 0)
+                    strcmp(arg, "min-line") == 0 ||
+                    strcmp(arg, "min-size") == 0)
                   usage("missing argument for --", arg);
                 else
-                  usage("invalid option --", arg, "--match, --max-count=, --max-depth=, --max-files=, --max-line=, --min-count=, --min-depth=, --min-line=, --mmap or --messages");
+                  usage("invalid option --", arg, "--match, --max-count=, --max-depth=, --max-files=, --max-line=, --max-size=--min-count=, --min-depth=, --min-line=, --min-size=, --mmap or --messages");
                 break;
 
               case 'n':
@@ -6348,6 +6343,7 @@ void init(int argc, const char **argv)
     // the 'grep' command is equivalent to 'ugrep --grep -G -. --sort'
     flag_basic_regexp = true;
     flag_grep = true;
+    flag_empty = true;
     flag_hidden = true;
     flag_sort = "name";
   }
@@ -6355,6 +6351,7 @@ void init(int argc, const char **argv)
   {
     // the 'egrep' command is equivalent to 'ugrep --grep -E -. --sort'
     flag_grep = true;
+    flag_empty = true;
     flag_hidden = true;
     flag_sort = "name";
   }
@@ -6363,6 +6360,7 @@ void init(int argc, const char **argv)
     // the 'fgrep' command is equivalent to 'ugrep --grep -F -. --sort'
     flag_fixed_strings = true;
     flag_grep = true;
+    flag_empty = true;
     flag_hidden = true;
     flag_sort = "name";
   }
@@ -6372,6 +6370,7 @@ void init(int argc, const char **argv)
     flag_decompress = true;
     flag_basic_regexp = true;
     flag_grep = true;
+    flag_empty = true;
     flag_hidden = true;
     flag_sort = "name";
   }
@@ -6380,6 +6379,7 @@ void init(int argc, const char **argv)
     // the 'zegrep' command is equivalent to 'ugrep --decompress --grep -E -. --sort'
     flag_decompress = true;
     flag_grep = true;
+    flag_empty = true;
     flag_hidden = true;
     flag_sort = "name";
   }
@@ -6389,6 +6389,7 @@ void init(int argc, const char **argv)
     flag_decompress = true;
     flag_fixed_strings = true;
     flag_grep = true;
+    flag_empty = true;
     flag_hidden = true;
     flag_sort = "name";
   }
@@ -6446,10 +6447,6 @@ void init(int argc, const char **argv)
     usage("option -P is not available in this build configuration of ugrep");
 #endif
   }
-
-  // --grep: enable -Y
-  if (flag_grep)
-    flag_empty = true;
 
   // -o (or -u) disables -Y to emulate grep behavior when ugrep is aliased to grep/egrep/fgrep
   if (flag_only_matching || flag_ungroup)
@@ -6698,7 +6695,12 @@ void init(int argc, const char **argv)
 
   // if no regex pattern is specified and no -e PATTERN and no -f FILE and not -Q, then exit with usage message
   if (Static::arg_pattern == NULL && pattern_args.empty() && flag_file.empty() && !flag_query)
-    usage("no PATTERN specified: specify --match or an empty \"\" pattern to match all input");
+    usage("no search PATTERN specified\n\n"
+        "Examples:\n"
+        "  ugrep \"PATTERN\"       # match PATTERN\n"
+        "  ugrep -e \"-PATTERN\"   # match -PATTERN (including the leading dash)\n"
+        "  ugrep \"\"              # match all lines\n"
+        "  ugrep --match         # match all lines\n");
 
   // regex PATTERN should be a FILE argument when -Q or -e PATTERN is specified
   if (!flag_match && Static::arg_pattern != NULL && (flag_query || !pattern_args.empty()))
@@ -7105,6 +7107,31 @@ void init(int argc, const char **argv)
   }
 
 #endif
+
+  // --ignore-file=FILE when FILE are pathnames: add globs to the exclude and exclude-dir lists with gitignore rules
+  auto ignore_file = flag_ignore_files.begin();
+  while (ignore_file != flag_ignore_files.end())
+  {
+    if (ignore_file->compare("-") == 0 || ignore_file->find(PATHSEPCHR) != std::string::npos)
+    {
+      FILE *file = NULL;
+
+      if (fopen_smart(&file, ignore_file->c_str(), "r") != 0)
+        error("option --ignore-files: cannot read", ignore_file->c_str());
+
+      // push globs imported from the file to the back of the vectors with gitignore flag = true
+      import_globs(file, flag_exclude, flag_exclude_dir, true);
+
+      if (file != stdin)
+        fclose(file);
+
+      flag_ignore_files.erase(ignore_file++);
+    }
+    else
+    {
+      ++ignore_file;
+    }
+  }
 
   // --exclude-from=FILE: add globs to the exclude and exclude-dir lists
   for (const auto& from : flag_exclude_from)
@@ -8031,7 +8058,7 @@ void ugrep()
       }
     }
   }
-  
+
   // update include-dir to search case insensitive directories collected from --iglob
   flag_include_iglob_dir_size += all_include_dir_from_iglob.size();
   flag_all_include_dir.insert(flag_all_include_dir.begin(), all_include_dir_from_iglob.begin(), all_include_dir_from_iglob.end());
@@ -8394,9 +8421,9 @@ void ugrep()
   {
     if (regex == "^$")
     {
-      regex.clear();
       flag_match = true;
       flag_line_regexp = true;
+      regex.clear();
     }
     else if (regex == "^" || regex == "$")
     {
@@ -8450,6 +8477,22 @@ void ugrep()
       copy_color(match_ms, color_ms);
       copy_color(match_mc, color_mc);
       copy_color(match_off, color_off);
+    }
+  }
+
+  // patterns .* and .+ are common easy special cases to optimize for search
+  if (!flag_fixed_strings && !flag_dotall && Static::bcnf.singleton_or_undefined())
+  {
+    if (regex == ".*")
+    {
+      flag_match = true;
+      flag_empty = true;
+      regex.clear();
+    }
+    else if (regex == ".+")
+    {
+      flag_match = true;
+      regex.clear();
     }
   }
 
@@ -9252,7 +9295,7 @@ Grep::Type Grep::select(size_t level, const char *pathname, const char *basename
       return Type::DIRECTORY;
     }
   }
-  else if ((attr & FILE_ATTRIBUTE_DEVICE) == 0 || flag_devices_action == Action::READ)
+  else if ((attr & FILE_ATTRIBUTE_DEVICE) == 0 || (is_argument && flag_devices_action == Action::UNSP) || flag_devices_action == Action::READ)
   {
     // --depth: recursion level not deep enough?
     if (flag_min_depth > 0 && level <= flag_min_depth)
@@ -9379,7 +9422,7 @@ Grep::Type Grep::select(size_t level, const char *pathname, const char *basename
 
   struct stat buf;
 
-  // -R or -S or command line argument FILE to search: follow symlinks to directories
+  // -R or command line argument FILE to search: follow symlinks to directories
   bool follow = flag_dereference || is_argument;
 
   // if dir entry is unknown and not following, then use lstat() to check if pathname is a symlink
@@ -9393,7 +9436,7 @@ Grep::Type Grep::select(size_t level, const char *pathname, const char *basename
           ) &&
           (flag_sort_key == Sort::NA || flag_sort_key == Sort::NAME)       // and we're not sorting or by name
         ) ||
-        stat(pathname, &buf) == 0)
+        stat(pathname, &buf) == 0)                                      // otherwise, do a stat
     {
       // check if directory
       if (type == DIRENT_TYPE_DIR || ((type == DIRENT_TYPE_UNKNOWN || type == DIRENT_TYPE_LNK) && S_ISDIR(buf.st_mode)))
@@ -9478,7 +9521,7 @@ Grep::Type Grep::select(size_t level, const char *pathname, const char *basename
           }
         }
       }
-      else if (type == DIRENT_TYPE_REG ? !is_output(inode) : (type == DIRENT_TYPE_UNKNOWN || type == DIRENT_TYPE_LNK) && S_ISREG(buf.st_mode) ? !is_output(buf.st_ino) : flag_devices_action == Action::READ)
+      else if (type == DIRENT_TYPE_REG ? !is_output(inode) : (type == DIRENT_TYPE_UNKNOWN || type == DIRENT_TYPE_LNK) && S_ISREG(buf.st_mode) ? !is_output(buf.st_ino) : (is_argument && flag_devices_action == Action::UNSP) || flag_devices_action == Action::READ)
       {
         // if symlinked files, then follow only if -R or -S is specified or if FILE is a command line argument
         if (!symlink || follow || flag_dereference_files)
@@ -9547,6 +9590,17 @@ Grep::Type Grep::select(size_t level, const char *pathname, const char *basename
               }
             }
             if (!ok && flag_file_magic.empty())
+              return Type::SKIP;
+          }
+
+          // --min-size, --max-size: skip regular files that are too small or too large
+          if (flag_min_size != 0 || flag_max_size != 0)
+          {
+            // if stat not done then do it to get size
+            if (type == DIRENT_TYPE_REG && (flag_sort_key == Sort::NA || flag_sort_key == Sort::NAME))
+              stat(pathname, &buf);
+
+            if (buf.st_size < static_cast<off_t>(flag_min_size) || (flag_max_size > 0 && buf.st_size > static_cast<off_t>(flag_max_size)))
               return Type::SKIP;
           }
 
@@ -9701,8 +9755,10 @@ void Grep::recurse(size_t level, const char *pathname)
       ignore_filename.assign(pathname).append(PATHSEPSTR).append(ignore_file);
 
       FILE *file = NULL;
+
       if (fopenw_s(&file, ignore_filename.c_str(), "r") == 0)
       {
+        // save current exclusions vector depths to restore afterwards
         if (!saved)
         {
           saved_all_exclude_size = flag_all_exclude.size();
@@ -9710,9 +9766,11 @@ void Grep::recurse(size_t level, const char *pathname)
           saved = true;
         }
 
-        // push globs imported from the ignore file to the back of the vectors
         Stats::ignore_file(ignore_filename);
-        import_globs(file, flag_all_exclude, flag_all_exclude_dir, true);
+
+        // push globs imported from the ignore file to the back of the vectors
+        import_globs(file, flag_all_exclude, flag_all_exclude_dir, true, pathname);
+
         fclose(file);
       }
     }
@@ -9740,6 +9798,14 @@ void Grep::recurse(size_t level, const char *pathname)
       // --index: do not search index files themselves, even when --hidden is specified
       if (flag_index != NULL && cFileName == ugrep_index_filename)
         continue;
+
+      // --min-size, --max-size: skip regular files that are too small or too large
+      if (flag_min_size != 0 || flag_max_size != 0)
+      {
+        uint64_t size = static_cast<uint64_t>(ffd.nFileSizeLow) | (static_cast<uint64_t>(ffd.nFileSizeHigh) << 32);
+        if (size < flag_min_size || (flag_max_size != 0 && size > flag_max_size))
+          continue;
+      }
 
       size_t len = strlen(pathname);
 
@@ -12098,10 +12164,6 @@ void Grep::search(const char *pathname, uint16_t cost)
               }
             }
 
-            // --max-count: max number of matches reached?
-            if (flag_max_count > 0 && matches > flag_max_count)
-              break;
-
             // output blocked?
             if (out.eof)
               goto exit_search;
@@ -12244,6 +12306,10 @@ void Grep::search(const char *pathname, uint16_t cost)
                 restline_last = last;
               }
             }
+
+            // --max-count: max number of matches reached?
+            if (flag_max_count > 0 && matches >= flag_max_count)
+              break;
 
             // no -u and no colors: if the match does not span more than one line, then skip to end of the line
             if (!flag_ungroup && !colorize)
@@ -12393,17 +12459,20 @@ void Grep::search(const char *pathname, uint16_t cost)
           }
         }
 
+        output_restline(flag_invert_match);
+
+        if (flag_max_count == 0 || matches < flag_max_count)
+        {
+          // get the remaining context after the last match to output
+          context = matcher->after();
+
+          if (context.len > 0)
+            any_line_handler(*matcher, context.buf, context.len, context.num);
+        }
+
         // --min-count: require at least min-count matches
         if (flag_min_count > 0 && matches < flag_min_count)
           matches = 0;
-
-        output_restline(flag_invert_match);
-
-        // get the remaining context after the last match to output
-        context = matcher->after();
-
-        if (context.len > 0)
-          any_line_handler(*matcher, context.buf, context.len, context.num);
 
         if (matches > 0 && (binfile || (binary && !flag_hex && !flag_with_hex)))
         {
@@ -12481,23 +12550,15 @@ void Grep::search(const char *pathname, uint16_t cost)
             if (out.eof)
               goto exit_search;
 
-            // --max-count: max number of matches reached?
-            if (flag_max_count > 0 && matches > flag_max_count)
-            {
-              if (flag_after_context == 0 || matches > flag_max_count + 1)
-                break;
-
-              // one more iteration to get the after context to output
-              lineno = current_lineno;
-              context_handler.set_after_lineno(lineno + matcher->lines());
-              continue;
-            }
-
             // get the lines before the matched line
             context = matcher->before();
 
             if (context.len > 0)
               context_handler(*matcher, context.buf, context.len, context.num);
+
+            // --max-count: max number of matches reached?
+            if (flag_max_count > 0 && matches > flag_max_count)
+              break;
 
             context_handler.output_before_context();
 
@@ -13428,11 +13489,12 @@ void Grep::extract(const char *filename, const char *findpart, FILE *output)
     continue;
 }
 
-// read globs from a file and split them into files or dirs to include or exclude by pushing them onto the vectors
-void import_globs(FILE *file, std::vector<std::string>& files, std::vector<std::string>& dirs, bool gitignore)
+// read globs from a file and split them into files or dirs to include or exclude by pushing them onto the vectors, gitignore compatible (true), use local pathname as root dir / in globs (when non-NULL)
+void import_globs(FILE *file, std::vector<std::string>& files, std::vector<std::string>& dirs, bool gitignore, const char *pathname)
 {
   // read globs from the specified file or files
   reflex::BufferedInput input(file);
+  std::string pathname_glob;
   std::string line;
 
   while (true)
@@ -13447,8 +13509,32 @@ void import_globs(FILE *file, std::vector<std::string>& files, std::vector<std::
     // add glob to files or dirs using gitignore glob pattern rules
     if (!line.empty() && line.front() != '#')
     {
-      if (line.front() != '!' || line.size() > 1)
+      if (line.size() > 1 || line.front() != '!') // negated matches start with ! (but not ^)
       {
+        // if pathname is specified, then expand the local pathname to replace the root dir / in globs
+        if (pathname != NULL && *pathname != '\0')
+        {
+          size_t pos = line.front() == '!'; // negated matches start with ! (but not ^)
+
+          if (line.size() > pos && line.at(pos) == '/')
+          {
+            // create pathname glob on demand by escaping *, ?, [, and \ in the pathname to match literally
+            if (pathname_glob.empty())
+            {
+              pathname_glob.assign(pathname);
+
+              for (size_t i = 0; i < pathname_glob.size(); ++i)
+              {
+                int ch = pathname_glob.at(i);
+                if (ch == '*' || ch == '?' || ch == '[' || ch == '\\')
+                  pathname_glob.insert(i++, "\\", 1);
+              }
+            }
+
+            line.insert(pos, pathname_glob);
+          }
+        }
+
         if (line.back() == '/')
         {
           if (line.size() > 1)
@@ -13731,6 +13817,25 @@ void strtopos2(const char *string, size_t& min, size_t& max, const char *message
     usage(message, string);
 }
 
+// convert unsigned decimal with optional kb, mb, gb, tb suffix to size_t, produce error when conversion fails
+size_t strtosize(const char *string, const char *message)
+{
+  char *rest = NULL;
+  size_t size = static_cast<size_t>(strtoull(string, &rest, 10));
+  if (rest == NULL || size == 0)
+    usage(message, string);
+  switch (*rest)
+  {
+    case 'k': case 'K': size *= 1024ULL; ++rest; break;
+    case 'm': case 'M': size *= 1024ULL*1024ULL; ++rest; break;
+    case 'g': case 'G': size *= 1024ULL*1024ULL*1024ULL; ++rest; break;
+    case 't': case 'T': if (sizeof(size_t) >= 8) { size *= 1024ULL*1024ULL*1024ULL*1024ULL; ++rest; } break;
+  }
+  if (*rest != 'b' && *rest != 'B' && *rest != '\0')
+    usage(message, string);
+  return size;
+}
+
 // convert unsigned decimal MAX fuzzy with optional prefix '+', '-', or '~' to positive size_t
 size_t strtofuzzy(const char *string, const char *message)
 {
@@ -13776,7 +13881,7 @@ void usage(const char *message, const char *arg, const char *valid)
   if (valid != NULL)
   {
     std::cerr << ", did you mean " << valid << "?" << std::endl;
-    std::cerr << "For more help on options, try `ugrep --help' or `ugrep --help WHAT'" << std::endl;
+    std::cerr << "For more help, run `ugrep --help' or `ugrep --help WHAT'" << std::endl;
   }
   else
   {
@@ -13784,7 +13889,7 @@ void usage(const char *message, const char *arg, const char *valid)
     while (*s != '\0' && *s != '-')
       ++s;
     std::cerr << std::endl;
-    std::cerr << "For more help on options, try `ugrep --help' or `ugrep --help ";
+    std::cerr << "For more help, run `ugrep --help' or `ugrep --help ";
     if (*s == '\0')
     {
       std::cerr << "WHAT'" << std::endl;
@@ -13954,19 +14059,20 @@ void help(std::ostream& out)
             additional values are output.  See also options --format and -u.\n\
     -D ACTION, --devices=ACTION\n\
             If an input file is a device, FIFO or socket, use ACTION to process\n\
-            it.  By default, ACTION is `skip', which means that devices are\n\
-            silently skipped.  When ACTION is `read', devices read just as if\n\
-            they were ordinary files.\n\
+            it.  When ACTION is `skip', devices are ignored.  When ACTION is\n\
+            `read', devices are read just as if they were ordinary files.  The\n\
+            default ACTION is `skip', except for devices specified as arguments\n\
+            on the command line, which can be explicitly skipped with -Dskip.\n\
     -d ACTION, --directories=ACTION\n\
-            If an input file is a directory, use ACTION to process it.  By\n\
-            default, ACTION is `skip', i.e., silently skip directories unless\n\
-            specified on the command line.  When ACTION is `read', warn when\n\
-            directories are read as input.  When ACTION is `recurse', read all\n\
-            files under each directory, recursively, following symbolic links\n\
-            only if they are on the command line.  This is equivalent to the -r\n\
-            option.  When ACTION is `dereference-recurse', read all files under\n\
-            each directory, recursively, following symbolic links.  This is\n\
-            equivalent to the -R option.\n\
+            If an input file is a directory, use ACTION to process it.  When\n\
+            ACTION is `read', warn when directories are read as input.  When\n\
+            ACTION is `recurse', read all files under each directory,\n\
+            recursively, following symbolic links only if they are on the\n\
+            command line.  This is equivalent to the -r option.  When ACTION is\n\
+            `dereference-recurse', read all files under each directory,\n\
+            recursively, following symbolic links.  This is equivalent to the\n\
+            -R option.  When no files or directories are specified on the\n\
+            command line, ACTION defaults to `recurse` or option -r.\n\
     --delay=DELAY\n\
             Set the default -Q key response delay.  Default is 3 for 300ms.\n\
     --depth=[MIN,][MAX], -1, -2, -3, ... -9, -10, -11, ...\n\
@@ -14032,8 +14138,9 @@ void help(std::ostream& out)
             directories are excluded as if --exclude-dir is specified.\n\
             Otherwise files are excluded.  A glob starting with a `!' overrides\n\
             previously-specified exclusions by including matching files.  Lines\n\
-            starting with a `#' and empty lines in FILE are ignored.  When FILE\n\
-            is a `-', standard input is read.  This option may be repeated.\n\
+            starting with a `#' in FILE are ignored.  When FILE is a `-',\n\
+            standard input is read.  This option may be repeated.  See also\n\
+            related option --ignore-files for subdirectory-specific exclusions.\n\
     --exclude-fs=MOUNTS\n\
             Exclude file systems specified by MOUNTS from recursive searches.\n\
             MOUNTS is a comma-separated list of mount points or pathnames to\n\
@@ -14066,6 +14173,14 @@ void help(std::ostream& out)
             patterns; thus nothing is matched.  This option may be repeated.\n"
 #ifndef OS_WIN
             "\
+    --files, -%%\n\
+            Boolean file matching mode, the opposite of --lines.  When combined\n\
+            with option --bool, matches a file if all Boolean conditions are\n\
+            satisfied.  For example, --bool --files 'A B|C -D' matches a file\n\
+            if some lines match `A', and some lines match either `B' or `C',\n\
+            and no line matches `D'.  See also options --and, --andnot, --not,\n\
+            --bool and --lines.  The double short option -%% enables options\n\
+            --bool --files.\n\
     --filter=COMMANDS\n\
             Filter files through the specified COMMANDS first before searching.\n\
             COMMANDS is a comma-separated list of `exts:command arguments',\n\
@@ -14177,13 +14292,12 @@ void help(std::ostream& out)
             Ignore files and directories matching the globs in each FILE that\n\
             is encountered in recursive searches.  The default FILE is\n\
             `" DEFAULT_IGNORE_FILE "'.  Matching files and directories located in the\n\
-            directory of the FILE and in subdirectories below are ignored.\n\
-            Globbing syntax is the same as the --exclude-from=FILE gitignore\n\
-            syntax, but files and directories are excluded instead of only\n\
-            files.  Directories are specifically excluded when the glob ends in\n\
-            a `/'.  Files and directories explicitly specified as command line\n\
-            arguments are never ignored.  This option may be repeated to\n\
-            specify additional files.\n\
+            directory of the FILE and in subdirectories are ignored.  When FILE is\n\
+            a full pathname, FILE is read ahead of the recursive search and\n\
+            globs are globally applied to ignore files and directories.  When\n\
+            FILE is a `-', standard input is read.  Globbing is the same as for\n\
+            --exclude-from=FILE, except that --ignore-files excludes files and\n\
+            also directories when globs match.  This option may be repeated.\n\
     --no-ignore-files\n\
             Do not ignore files, i.e. cancel --ignore-files when specified.\n\
     --include=GLOB\n\
@@ -14294,11 +14408,17 @@ void help(std::ostream& out)
             -cm1, (with a comma) counts nonzero matches.  When -u or --ungroup\n\
             is specified, each individual match counts.  See also option -K.\n\
     --match\n\
-            Match all input.  Same as specifying an empty pattern to search.\n\
+            Match all lines.  Same as specifying an empty pattern to search.\n\
     --max-files=NUM\n\
             Restrict the number of files matched to NUM.  Note that --sort or\n\
             -J1 may be specified to produce replicable results.  If --sort is\n\
             specified, then the number of threads spawned is limited to NUM.\n\
+    --max-size=MAX\n\
+            Only search files whose physical size does not exceed MAX bytes.\n\
+            Suffix MAX with kb, mb, gb, tb for kilo, mega, giga, or terabytes.\n\
+    --min-size=MIN\n\
+            Only search files whose physical size equals or exceeds MIN bytes.\n\
+            Suffix MIN with kb, mb, gb, tb for kilo, mega, giga, or terabytes.\n\
     --mmap[=MAX]\n\
             Use memory maps to search files.  By default, memory maps are used\n\
             under certain conditions to improve performance.  When MAX is\n\
@@ -14352,14 +14472,6 @@ void help(std::ostream& out)
     --only-line-number\n\
             Only the line number of a matching line is output.  The line number\n\
             counter is reset for each file processed.\n\
-    --files, -%%\n\
-            Boolean file matching mode, the opposite of --lines.  When combined\n\
-            with option --bool, matches a file if all Boolean conditions are\n\
-            satisfied.  For example, --bool --files 'A B|C -D' matches a file\n\
-            if some lines match `A', and some lines match either `B' or `C',\n\
-            and no line matches `D'.  See also options --and, --andnot, --not,\n\
-            --bool and --lines.  The double short option -%% enables options\n\
-            --bool --files.\n\
     -P, --perl-regexp\n\
             Interpret PATTERN as a Perl regular expression"
 #if defined(HAVE_PCRE2)
@@ -14652,6 +14764,8 @@ void help(const char *what)
   if (what == NULL || *what == '\0')
   {
     help(std::cout);
+
+    std::cout << "\n    Specify `ugrep --help WHAT' for help on WHAT.\n\n";
   }
   else
   {
@@ -14711,7 +14825,7 @@ void help(const char *what)
     if (found == 0)
       std::cout << "ugrep --help: nothing appropriate for " << what;
     else
-      std::cout << "\n\nLong options may start with `--no-' to disable, when applicable.";
+      std::cout << "\n\n    Long options may start with `--no-' to disable, when applicable.";
 
     std::cout << "\n\n";
 
@@ -14912,9 +15026,8 @@ Gitignore-style globbing is performed by all glob-related options: -g (--glob),\
  /**         when at the end of a glob, matches everything after the /\n\
  \\?          a ? or any other character specified after the backslash\n\
 \n\
-A glob pattern starting with a ^ or a ! inverts the matching.  Instead of\n\
-matching a filename or directory name, the directory or file is ignored and\n\
-excluded from the search.\n\
+A glob pattern starting with a ! or a ^ inverts the match.  That is, instead of\n\
+matching a file or directory name, the file or directory is ignored.\n\
 \n\
 When a glob pattern contains a /, the full pathname is matched from the working\n\
 directory down.  Otherwise, the basename of a file or directory is matched in\n\
@@ -14923,29 +15036,31 @@ recursive searches.\n\
 When a glob pattern starts with ./ or just a single /, the glob is matched at\n\
 the working directory.\n\
 \n\
-When a glob pattern ends with a /, directories are matched.\n\
+When a glob pattern ends with a /, only directories are matched, not files.\n\
 \n\
 Option -g (--glob) performs glob matching with the specified glob pattern or\n\
-a set of comma-separated globs.  When a glob is preceded with a ^ or !, the\n\
+a set of comma-separated globs.  When a glob is preceded with a ! or ^, the\n\
 glob match is inverted by excluding matching files or directories.\n\
 \n\
 Option --iglob performs case-insensitive glob matching with the specified glob\n\
-pattern or a set of comma-separated globs.  When a glob is preceded with a ^\n\
-or !, the glob match is inverted by excluding matching files or directories.\n\
+pattern or a set of comma-separated globs.  When a glob is preceded with a !\n\
+or ^, the glob match is inverted by excluding matching files or directories.\n\
 \n\
 Option --glob-ignore-case performs case-insensitive glob matching in general,\n\
 except with the globs specified in --ignore-files, such as .gitignore.\n\
 \n\
 Option --ignore-files specifies a file with gitignore-style globs, where the\n\
-default file is .gitignore.  When one ore more ignore files are encountered in\n\
-recursive searches, the search is narrowed accordingly by excluding files and\n\
-directories matching the globs.\n\
+default file is .gitignore.  When ignore files are encountered in recursive\n\
+searches, the search is narrowed by excluding file and directory names matching\n\
+the globs.  The --ignore-files glob matching of both file and directory names\n\
+differs from all other glob-related options, such as --exclude-from, that\n\
+require globs ending in / to match directory names.\n\
 \n\
 Option -O (--file-extension) matches filename extensions, or ignores extensions\n\
-when preceded with a ^ or !.\n\
+when preceded with a ! or ^.\n\
 \n\
 Option -t (--file-type) matches file types, or ignores file types when\n\
-preceded with a ^ or a !.  Use -tlist to view the list of supported file types\n\
+preceded with a ! or a ^.  Use -tlist to view the list of supported file types\n\
 with corresponding glob patterns.\n\
 \n\
 Option --stats displays the search path globs applied to the matching files.\n\

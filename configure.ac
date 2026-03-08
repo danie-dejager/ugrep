@@ -1,4 +1,4 @@
-AC_INIT([ugrep],[7.5.0],[https://github.com/Genivia/ugrep/issues],[ugrep],[https://ugrep.com])
+AC_INIT([ugrep],[7.6.0],[https://github.com/Genivia/ugrep/issues],[ugrep],[https://ugrep.com])
 AM_INIT_AUTOMAKE([foreign subdir-objects dist-xz no-dist-gzip])
 AC_CONFIG_HEADERS([config.h])
 AC_COPYRIGHT([Copyright (C) 2019-2025 Robert van Engelen, Genivia Inc.])
@@ -18,7 +18,13 @@ AC_STRUCT_DIRENT_D_TYPE
 
 AC_FUNC_MMAP
 
-AC_CHECK_HEADERS([sys/time.h sys/statvfs.h sys/param.h sys/mount.h sys/cpuset.h sys/resource.h sched.h])
+AC_CHECK_HEADERS([sys/time.h sys/statvfs.h sys/param.h sys/mount.h sys/resource.h sched.h])
+AC_CHECK_HEADERS([sys/cpuset.h],[],[],[
+$ac_includes_default
+#ifdef HAVE_SYS_PARAM_H
+#include <sys/param.h>
+#endif
+])
 
 AC_CHECK_FUNCS([statfs statvfs])
 
