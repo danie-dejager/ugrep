@@ -132,6 +132,8 @@ After this, you may want to test ugrep and install it (optional):
 #include <stringapiset.h>       // internationalization
 #include <direct.h>             // directory access
 #include <winsock.h>            // gethostname() for --hyperlink
+#include <securitybaseapi.h>    // GetTokenInformation()
+#include <aclapi.h>             // GetSecurityInfo()
 #pragma comment(lib, "Ws2_32.lib")
 
 #else
@@ -2269,6 +2271,26 @@ struct Grep {
 
 #endif
 
+  // extend the reflex::Input::Handler to handle detection of binary input like GNU grep (check for NULs)
+  struct BinaryHandler : public reflex::Input::Handler {
+
+    BinaryHandler(Grep& grep)
+      :
+        grep(grep)
+    { }
+
+    Grep& grep;
+
+    size_t operator()(FILE*, char *buf, size_t len)
+    {
+      // simpler form of binary file detection without Unicode UTF-8 validation, check for NULs like GNU grep
+      grep.binfile = grep.binfile || (memchr(buf, 0, len) != NULL);
+
+      return len;
+    }
+
+  };
+
 #ifndef OS_WIN
 
   // extend the reflex::Input::Handler to handle non-blocking input from a character device (TTY) or from a pipe
@@ -2295,7 +2317,7 @@ struct Grep {
       }
       else if (!flag_text && !flag_hex && !flag_with_hex && flag_encoding_type != reflex::Input::file_encoding::null_data && !grep.binfile)
       {
-        // simpler form of binary file detection without Unicode UTF-8 validation, like GNU grep
+        // simpler form of binary file detection without Unicode UTF-8 validation, check for NULs like GNU grep
         grep.binfile = (memchr(buf, 0, len) != NULL);
       }
 
@@ -3211,7 +3233,8 @@ struct Grep {
       out(file),
       matcher(matcher),
       matchers(matchers),
-      file_in(NULL)
+      file_in(NULL),
+      bin_handler(*this)
 #ifndef OS_WIN
     , stdin_handler(*this)
 #endif
@@ -3898,7 +3921,8 @@ struct Grep {
 #if defined(WITH_STDIN_DRAIN) && !defined(OS_WIN)
 
     // drain stdin when non-seekable file such as a pipe until eof, unless option -q is used
-    if (file_in == stdin && !flag_quiet && !flag_files_with_matches && flag_max_count == 0 && !feof(stdin) && fseek(stdin, 0, SEEK_END) < 0 && errno != EINVAL)
+    if (file_in == stdin && !flag_quiet && !flag_files_with_matches && flag_max_count == 0 && flag_max_line == 0 &&
+        !feof(stdin) && fseek(stdin, 0, SEEK_END) < 0 && errno != EINVAL)
     {
       char buf[16384];
       while (input.get(buf, sizeof(buf)) > 0)
@@ -3961,19 +3985,23 @@ struct Grep {
 #endif
     }
 
-    // when non-blocking do not check init_is_binary(), wait until handler detects binary files that have NUL bytes
+    // interactive: do not check init_is_binary(), wait until handler detects binary files that have NUL bytes
     if (!interactive)
     {
+      // otherwise, check if the file is a binary file
       if (flag_binary_without_match)
       {
         // -I: do not match binary files
         if (init_is_binary())
           return false;
       }
-      else if (!flag_quiet && !flag_files_with_matches && !flag_count && flag_format == NULL && !flag_text && !flag_hex && !flag_with_hex)
+      else if (!flag_quiet && !flag_files_with_matches && !flag_count && flag_format == NULL && !flag_text && !flag_hex && !flag_with_hex && flag_encoding_type != reflex::Input::file_encoding::null_data)
       {
-        // not -q, -l, -c, --format, -a -X, -W: check if initial part of the file is binary
+        // not -q, -l, -c, --format, -a, -X, -W, -00: check if initial part of the file is binary
         binfile = init_is_binary();
+
+        // detect binary input dynamically when more input is read after checking the inital input
+        matcher->in.set_handler(&bin_handler);
       }
     }
 
@@ -4089,6 +4117,7 @@ struct Grep {
   bool                           binary;        // the match is binary as per option -X or -W
   size_t                         matches;       // number of matches
   bool                           stop;          // stop searching when --max-files max reached
+  BinaryHandler                  bin_handler;   // a handler to detect binary input like GNU grep
 #ifndef OS_WIN
   StdInHandler                   stdin_handler; // a handler to handle non-blocking input from a TTY or a slow pipe
 #endif
@@ -4779,10 +4808,59 @@ static void load_config(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_
   std::string config_file(flag_config);
   FILE *file = NULL;
 
-  if (home || fopen_smart(&file, flag_config, "r") != 0)
+  if (!home)
   {
-    file = NULL;
+    // try opening a config file in the working directory
+    if (fopen_smart(&file, flag_config, "r") == 0)
+    {
+      if (file != NULL && file != stdin)
+      {
+        // check if we own this config file located in the working directory
+#ifdef OS_WIN
+        HANDLE hFile = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(file)));
+        PSID pSidOwner = NULL;
+        PSECURITY_DESCRIPTOR pSD = NULL;
+        if (GetSecurityInfo(hFile, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &pSidOwner, NULL, NULL, NULL, &pSD) == ERROR_SUCCESS)
+        {
+          HANDLE hToken = NULL;
+          if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+          {
+            DWORD dwBufferSize = 0;
+            GetTokenInformation(hToken, TokenUser, NULL, 0, &dwBufferSize);
+            PTOKEN_USER pTokenUser = reinterpret_cast<PTOKEN_USER>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwBufferSize));
+            if (pTokenUser != NULL)
+            {
+              if (!GetTokenInformation(hToken, TokenUser, pTokenUser, dwBufferSize, &dwBufferSize) ||
+                  !EqualSid(pSidOwner, pTokenUser->User.Sid))
+              {
+                fclose(file);
+                file = NULL;
+              }
+              HeapFree(GetProcessHeap(), 0, pTokenUser);
+            }
+            CloseHandle(hToken);
+          }
+          if (pSD)
+            LocalFree(pSD);
+        }
+#else
+        struct stat buf;
+        if (fstat(fileno(file), &buf) == 0 && buf.st_uid != getuid())
+        {
+          fclose(file);
+          file = NULL;
+        }
+#endif
+      }
+    }
+    else
+    {
+      file = NULL;
+    }
+  }
 
+  if (file == NULL)
+  {
     // if not in the working directory, then check the home directory
     if (Static::home_dir != NULL && *flag_config != '~' && *flag_config != PATHSEPCHR)
     {
@@ -14369,7 +14447,7 @@ void help(std::ostream& out)
             Output file matches in JSON.  When -H, -n, -k, or -b is specified,\n\
             additional values are output.  See also options --format and -u.\n\
     -K [MIN,][MAX], --range=[MIN,][MAX], --min-line=MIN, --max-line=MAX\n\
-            Start searching at line MIN, stop at line MAX when specified.\n\
+            Start searching at line MIN, stop reading input after line MAX.\n\
     -k, --column-number\n\
             The column number of a pattern match is displayed in front of the\n\
             respective matched line, starting at column 1.  Tabs are expanded\n\
@@ -14402,7 +14480,7 @@ void help(std::ostream& out)
             with options -O and -t.  Every file on the search path is read,\n\
             making recursive searches potentially more expensive.\n\
     -m [MIN,][MAX], --min-count=MIN, --max-count=MAX\n\
-            Require MIN matches, stop reading input after MAX matches, output\n\
+            Require MIN matches, stop reading input upon MAX matches.  Output\n\
             MIN to MAX matches.  For example, -m1 outputs the first match and\n\
             -cm1, (with a comma) counts nonzero matches.  When -u or --ungroup\n\
             is specified, each individual match counts.  See also option -K.\n\
