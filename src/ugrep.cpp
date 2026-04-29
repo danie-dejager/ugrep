@@ -4803,12 +4803,13 @@ static void load_config(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_
 
   // if config file was parsed before, then only try parsing the home dir config file
   bool home = flag_config_files.find(flag_config) != flag_config_files.end();
+  bool wdir = !home;
 
   // open a config file in the working dir or in the home directory
   std::string config_file(flag_config);
   FILE *file = NULL;
 
-  if (!home)
+  if (wdir)
   {
     // try opening a config file in the working directory
     if (fopen_smart(&file, flag_config, "r") == 0)
@@ -4861,6 +4862,8 @@ static void load_config(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_
 
   if (file == NULL)
   {
+    wdir = false;
+
     // if not in the working directory, then check the home directory
     if (Static::home_dir != NULL && *flag_config != '~' && *flag_config != PATHSEPCHR)
     {
@@ -4956,6 +4959,17 @@ static void load_config(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_
       }
 
       ++lineno;
+    }
+
+    // clear flags that don't make sense for config, confusing
+    flag_save_config = NULL;
+    flag_query = false;
+    flag_pager = NULL;
+    if (wdir)
+    {
+      flag_view = NULL;
+      flag_filter.clear();
+      flag_filter_magic_label.clear();
     }
 
     if (ferror(file))
@@ -5089,12 +5103,6 @@ static void save_config()
     fprintf(file, "view=%s\n\n", flag_view);
   else
     fprintf(file, "no-view\n\n");
-
-  fprintf(file, "# Enable a pager for terminal output, default: no-pager\n");
-  if (flag_pager != NULL && *flag_pager != '\0')
-    fprintf(file, "pager=%s\n\n", flag_pager);
-  else
-    fprintf(file, "# pager=less\n\n");
 
   fprintf(file, "# Enable pretty output to the terminal, default: pretty\n%s\n\n", flag_pretty != NULL ? "pretty" : "no-pretty");
 
@@ -14689,8 +14697,9 @@ void help(std::ostream& out)
     -v, --invert-match\n\
             Selected lines are those not matching any of the specified\n\
             patterns.\n\
-    --view[=COMMAND]\n\
-            Use COMMAND to view/edit a file in -Q query TUI by pressing CTRL-Y.\n\
+    --view[=[+]COMMAND]\n\
+            Use COMMAND to view/edit a file in -Q query TUI by pressing CTRL-Y,\n\
+            +COMMAND waits for a key press after COMMAND terminated.\n\
     -W, --with-hex\n\
             Output binary matches in hexadecimal, leaving text matches alone.\n\
             This option is equivalent to the --binary-files=with-hex option.\n\

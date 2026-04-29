@@ -42,6 +42,7 @@
 #include <iostream>
 #include <fstream>
 #include <thread>
+#include <chrono>
 #include <fcntl.h>
 
 #ifdef OS_WIN
@@ -2370,13 +2371,14 @@ void Query::view()
   }
 
   // if no viewer, then give up
-  if (flag_view == NULL || *flag_view == '\0')
+  if (flag_view == NULL || *flag_view == '\0' || (*flag_view == '+' && flag_view[1] == '\0'))
   {
     Screen::alert();
     return;
   }
 
-  std::string command(flag_view);
+  bool keypress = (*flag_view == '+');
+  std::string command(flag_view + keypress);
   int ref = select_ >= 0 ? select_ : row_;
   size_t line_number = 0;
 
@@ -2517,7 +2519,7 @@ void Query::view()
       // file was changed when viewed, e.g. by an editor?
       bool changed = false;
 
-      // track elapsed time: if the command terminates very quickly within 500ms, then let the user press a key
+      // track elapsed time: if the command terminates very quickly within 100ms, then wait 1s
       reflex::timer_type et;
       reflex::timer_start(et);
 
@@ -2635,24 +2637,23 @@ void Query::view()
       VKey::flush();
 #endif
 
-      if (ok)
-      {
-        float ms = reflex::timer_elapsed(et);
-
 #ifdef OS_WIN
-        if (ms < 500 || strcmp(flag_view, "more") == 0)
+      if (ok && (keypress || strcmp(flag_view, "more") == 0))
 #else
-        if (ms < 500)
+      if (ok && keypress)
 #endif
-        {
-          // command terminated very quickly within 500ms
-          Screen::setpos(Screen::rows - 1, 0);
-          Screen::invert();
-          Screen::put("(END)");
-          Screen::normal();
-          Screen::put(" press a key ");
-          VKey::get();
-        }
+      {
+        Screen::setpos(Screen::rows - 1, 0);
+        Screen::invert();
+        Screen::put("(END)");
+        Screen::normal();
+        Screen::put(" press a key ");
+        VKey::get();
+      }
+      else if (reflex::timer_elapsed(et) < 100)
+      {
+        // command terminated very quickly within 100ms
+        std::this_thread::sleep_for(std::chrono::seconds(1));
       }
 
       if (changed)
