@@ -887,13 +887,6 @@ void Query::query()
   VKey::cleanup();
   Screen::cleanup();
 
-  // check TTY a final time for color support to print results, if any, this time without --query
-  flag_query = false;
-  terminal();
-
-  // print the selected output
-  print();
-
   // close the search pipe to terminate the search threads, if still open
   if (!eof_)
   {
@@ -916,6 +909,13 @@ void Query::query()
   stdin_stop = true;
   if (stdin_thread_.joinable())
     stdin_thread_.join();
+
+  // check TTY a final time for color support to print results, if any, this time without --query
+  flag_query = false;
+  terminal();
+
+  // print the selected output
+  print();
 }
 
 // run the query UI
@@ -1153,15 +1153,15 @@ void Query::query_ui()
               }
               break;
 
-            case VKey::UP: // SHIFT-UP/CTRL-UP: scroll half page up
+            case VKey::UP: // SHIFT-UP/CTRL-UP: scroll half a page up
               pgup(true);
               break;
 
-            case VKey::DOWN: // SHIFT-DOWN/CTRL-DOWN: scroll half page down
+            case VKey::DOWN: // SHIFT-DOWN/CTRL-DOWN: scroll half a page down
               pgdn(true);
               break;
 
-            case VKey::LEFT: // SHIFT-LEFT/CTRL-LEFT: pan hald a page left
+            case VKey::LEFT: // SHIFT-LEFT/CTRL-LEFT: pan half a page left
               if (mode_ == Mode::QUERY)
               {
                 skip_ -= Screen::cols / 2;
@@ -1175,7 +1175,7 @@ void Query::query_ui()
               }
               break;
 
-            case VKey::RIGHT: // SHIFT-RIGHT/CTRL-RIGHT: pan hald a page right
+            case VKey::RIGHT: // SHIFT-RIGHT/CTRL-RIGHT: pan half a page right
               if (mode_ == Mode::QUERY)
               {
                 skip_ += Screen::cols / 2;
@@ -1356,7 +1356,7 @@ void Query::query_ui()
         case VKey::CTRL_Q: // CTRL-Q: immediately quit and output lines
           return;
 
-        case VKey::CTRL_S: // CTRL=S: scroll to next file or directory (with -l or -c) or context with -ABC
+        case VKey::CTRL_S: // CTRL-S: scroll to next file or directory (with -l or -c) or context with -ABC
           next();
           break;
 
