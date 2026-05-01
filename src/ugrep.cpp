@@ -11922,8 +11922,10 @@ void Grep::search(const char *pathname, uint16_t cost)
                 {
                   if (restline_data != NULL)
                   {
+                    if (restline_last + restline_size > first)
+                      restline_size = first - restline_last;
                     out.str(color_sl);
-                    out.str(restline_data, first - restline_last);
+                    out.str(restline_data, restline_size);
                     out.str(color_off);
                   }
 
@@ -12424,7 +12426,11 @@ void Grep::search(const char *pathname, uint16_t cost)
                 if (binary)
                 {
                   if (restline_data != NULL)
-                    out.dump.hex(v_hex_line, restline_last, restline_data, first - restline_last);
+                  {
+                    if (restline_last + restline_size > first)
+                      restline_size = first - restline_last;
+                    out.dump.hex(v_hex_line, restline_last, restline_data, restline_size);
+                  }
 
                   out.dump.hex(v_hex_match, first, begin, size);
                 }
@@ -12432,8 +12438,10 @@ void Grep::search(const char *pathname, uint16_t cost)
                 {
                   if (restline_data != NULL)
                   {
+                    if (restline_last + restline_size > first)
+                      restline_size = first - restline_last;
                     out.str(v_color_sl);
-                    out.str(restline_data, first - restline_last);
+                    out.str(restline_data, restline_size);
                     out.str(color_off);
                   }
 
@@ -12809,15 +12817,24 @@ void Grep::search(const char *pathname, uint16_t cost)
                 if (binary)
                 {
                   if (restline_data != NULL)
-                    out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, first - restline_last);
+                  {
+                    if (restline_last + restline_size > first)
+                      restline_size = first - restline_last;
+                    out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, restline_size);
+                  }
 
                   out.dump.hex(Output::Dump::HEX_MATCH, first, begin, size);
                 }
                 else
                 {
-                  out.str(color_sl);
-                  out.str(restline_data, first - restline_last);
-                  out.str(color_off);
+                  if (restline_data != NULL)
+                  {
+                    if (restline_last + restline_size > first)
+                      restline_size = first - restline_last;
+                    out.str(color_sl);
+                    out.str(restline_data, restline_size);
+                    out.str(color_off);
+                  }
 
                   if (flag_replace != NULL)
                   {
@@ -13240,13 +13257,17 @@ void Grep::search(const char *pathname, uint16_t cost)
                 {
                   if (restline_data != NULL)
                     out.dump.hex(Output::Dump::HEX_CONTEXT_LINE, restline_last, restline_data, first - restline_last);
+
                   out.dump.hex(Output::Dump::HEX_CONTEXT_MATCH, first, begin, size);
                 }
                 else
                 {
-                  out.str(color_cx);
-                  out.str(restline_data, first - restline_last);
-                  out.str(color_off);
+                  if (restline_data != NULL)
+                  {
+                    out.str(color_cx);
+                    out.str(restline_data, first - restline_last);
+                    out.str(color_off);
+                  }
 
                   if (flag_replace != NULL)
                   {

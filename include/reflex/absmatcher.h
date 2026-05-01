@@ -132,7 +132,7 @@ class AbstractMatcher {
     static const size_t BUFSZ = REFLEX_BUFSZ;
 #endif
 #ifndef REFLEX_BOLSZ
-    static const size_t BOLSZ = BUFSZ;      ///< max begin of line size till match to retain in memory by growing the buffer
+    static const size_t BOLSZ = (32*1024*1024); ///< max (begin of) line size till match to retain, truncate otherwise
 #else
     static const size_t BOLSZ = REFLEX_BOLSZ;
 #endif
@@ -488,10 +488,10 @@ class AbstractMatcher {
     evh_ = handler;
   }
   /// Invoke handler explicitly (externally) with zero shift distance.
-  inline void handle()
+  inline void handle(size_t gap = 0)
   {
-    if (evh_)
-      (*evh_)(*this, buf_, 0, num_);
+    if (evh_ != NULL)
+      (*evh_)(*this, buf_, gap, num_);
   }
   /// Set reserved bytes for buffer shifting
   inline void set_reserve(size_t n)
@@ -1439,7 +1439,7 @@ class AbstractMatcher {
 #if WITH_SPAN
     (void)lineno();
     cno_ = 0;
-    if (bol_ + Const::BOLSZ - buf_ < txt_ - bol_)
+    if (txt_ > bol_ + Const::BOLSZ)
     {
       // this line is too long, shift all the way to the match instead of to the begin of the last line
       DBGLOG("Line in buffer is too long to shift, moving bol position to text match position");
@@ -1452,8 +1452,7 @@ class AbstractMatcher {
       // keep reserved bytes before the current line in the buffer, when nonzero (default is zero)
       gap -= res_;
       // invoke user-defined handler when defined
-      if (evh_ != NULL)
-        (*evh_)(*this, buf_, gap, num_);
+      handle(gap);
       // update state and shift
       cur_ -= gap;
       ind_ -= gap;
@@ -1479,6 +1478,8 @@ class AbstractMatcher {
       // adjust max to add byte for a terminating \0
       ++max_;
       DBGLOG("Expand buffer to %zu bytes", max_);
+      // invoke user-defined handler when defined
+      handle();
 #if WITH_REALLOC
 #if defined(__WIN32__) || defined(_WIN32) || defined(WIN32) || defined(_WIN64) || defined(__BORLANDC__)
       char *newbuf = static_cast<char*>(_aligned_realloc(static_cast<void*>(buf_), max_, 4096));
@@ -1669,7 +1670,7 @@ class AbstractMatcher {
   const char *cpb_; ///< column pointer in buffer, updated when counting column numbers with columno()
 #endif
   size_t      cno_; ///< column number count (cached)
-  size_t      num_; ///< character count of the input till bol_
+  size_t      num_; ///< number of bytes shifted out so far, when buffer shifted
   size_t      res_; ///< reserve bytes to keep in the buffer before bol_ when shifting
   bool        own_; ///< true if AbstractMatcher::buf_ was allocated and should be deleted
   bool        eof_; ///< input has reached EOF
