@@ -1,4 +1,4 @@
-AC_INIT([ugrep],[7.8.0],[https://github.com/Genivia/ugrep/issues],[ugrep],[https://ugrep.com])
+AC_INIT([ugrep],[7.8.1],[https://github.com/Genivia/ugrep/issues],[ugrep],[https://ugrep.com])
 AM_INIT_AUTOMAKE([foreign subdir-objects dist-xz no-dist-gzip])
 AC_CONFIG_HEADERS([config.h])
 AC_COPYRIGHT([Copyright (C) 2019-2026 Robert van Engelen, Genivia Inc.])
@@ -210,22 +210,33 @@ else
     AC_MSG_RESULT($msse2_ok)
     if test "x$msse2_ok" = "xyes"; then
       SIMD_FLAGS="-msse2 -DHAVE_SSE2"
-      AC_MSG_CHECKING(for --disable-avx)
+      AC_MSG_CHECKING(for --disable-avx2)
       if ! test "x$with_no_avx2" = "xyes"; then
         AC_MSG_RESULT(no)
         AC_MSG_CHECKING([whether ${CXX} supports AVX2/AVX512BW intrinsics])
         save_CXXFLAGS=$CXXFLAGS
-        CXXFLAGS="-mavx512bw"
-        AC_RUN_IFELSE([AC_LANG_PROGRAM([[#include <immintrin.h>]],[[__m512i n = _mm512_set1_epi8(42); (void)_mm512_cmpeq_epi8_mask(n, n);]])],
-                      [mavx_ok=yes],
-                      [mavx_ok=no])
-        if test "x$mavx_ok" = "xyes"; then
-          SIMD_FLAGS="-msse2 -DHAVE_AVX512BW"
-          SIMD_AVX2_FLAGS="-mavx2"
-          SIMD_AVX512BW_FLAGS="-mavx512bw"
+        if ! test "x$with_no_avx512" = "xyes"; then
+          CXXFLAGS="-mavx512bw"
+          AC_RUN_IFELSE([AC_LANG_PROGRAM([[#include <immintrin.h>]], [[__m512i n = _mm512_set1_epi8(42); (void)_mm512_cmpeq_epi8_mask(n, n);]])],
+                        [mavx_ok=yes],
+                        [mavx_ok=no])
+          if test "x$mavx_ok" = "xyes"; then
+            SIMD_FLAGS="-msse2 -DHAVE_AVX512BW"
+            SIMD_AVX2_FLAGS="-mavx2"
+            SIMD_AVX512BW_FLAGS="-mavx512bw"
+          else
+            CXXFLAGS="-mavx2"
+            AC_RUN_IFELSE([AC_LANG_PROGRAM([[#include <immintrin.h>]], [[__m256i n = _mm256_set1_epi8(42); (void)_mm256_movemask_epi8(_mm256_and_si256(n, n));]])],
+                          [mavx_ok=yes],
+                          [mavx_ok=no])
+            if test "x$mavx_ok" = "xyes"; then
+              SIMD_FLAGS="-msse2 -DHAVE_AVX2"
+              SIMD_AVX2_FLAGS="-mavx2"
+            fi
+          fi
         else
           CXXFLAGS="-mavx2"
-          AC_RUN_IFELSE([AC_LANG_PROGRAM([[#include <immintrin.h>]],[[__m256i n = _mm256_set1_epi8(42); (void)_mm256_movemask_epi8(_mm256_and_si256(n, n));]])],
+          AC_RUN_IFELSE([AC_LANG_PROGRAM([[#include <immintrin.h>]], [[__m256i n = _mm256_set1_epi8(42); (void)_mm256_movemask_epi8(_mm256_and_si256(n, n));]])],
                         [mavx_ok=yes],
                         [mavx_ok=no])
           if test "x$mavx_ok" = "xyes"; then
