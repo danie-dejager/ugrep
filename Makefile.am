@@ -94,7 +94,7 @@ install-data-hook:
 		 echo "|   pandoc       https://pandoc.org                    |"; \
 		 echo "|   exiftool     https://exiftool.sourceforge.net      |"; \
 		 echo "|                                                      |"; \
-		 echo "| Aliases to consider:                                 |"; \
+		 echo "| Aliases to consider for interactive searching:       |"; \
 		 echo "|   alias uq     = 'ug -Q'                             |"; \
 		 echo "|   alias uz     = 'ug -z'                             |"; \
 		 echo "|   alias ux     = 'ug -U --hexdump'                   |"; \

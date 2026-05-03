@@ -30,7 +30,7 @@
 @file      ugrep.cpp
 @brief     file pattern searcher
 @author    Robert van Engelen - engelen@genivia.com
-@copyright (c) 2019-2025, Robert van Engelen, Genivia Inc. All rights reserved.
+@copyright (c) 2019-2026, Robert van Engelen, Genivia Inc. All rights reserved.
 @copyright (c) BSD-3 License - see LICENSE.txt
 
 User manual:
@@ -4016,8 +4016,8 @@ struct Grep {
   // initial part of a file is binary
   bool init_is_binary()
   {
-    // check buffer for binary data, the buffer is a 256K window over the input file
-    size_t avail = matcher->avail();
+    // check initial input for binary data, fill up to 131072 bytes to check (similar GNU grep, but a bit more)
+    size_t avail = matcher->avail(reflex::AbstractMatcher::Const::BUFSZ);
     if (avail == 0)
       return false;
 
@@ -4961,10 +4961,37 @@ static void load_config(std::list<std::pair<CNF::PATTERN,const char*>>& pattern_
       ++lineno;
     }
 
-    // clear flags that don't make sense for config, confusing
-    flag_save_config = NULL;
-    flag_query = false;
+    // clear flags that don't make sense for config, clashing and confusing to allow
+    flag_any_line = false;
+    flag_basic_regexp = false;
+    flag_bool = false;
+    flag_count = false;
+    flag_file.clear();
+    flag_files_with_matches = false;
+    flag_files_without_match = false;
+    flag_fixed_strings = false;
+    flag_from.clear();
+    flag_fuzzy = 0;
+    flag_invert_match = false;
+    flag_line_regexp = false;
+    flag_match = false;
+    flag_max_count = 0;
+    flag_max_files = 0;
+    flag_max_line = 0;
+    flag_max_size = 0;
+    flag_min_line = 0;
+    flag_min_size = 0;
+    flag_only_line_number = false;
+    flag_only_matching = false;
     flag_pager = NULL;
+    flag_perl_regexp = false;
+    flag_query = false;
+    flag_quiet = false;
+    flag_regexp.clear();
+    flag_replace = NULL;
+    flag_save_config = NULL;
+    flag_text = false;
+    flag_word_regexp = false;
     if (wdir)
     {
       flag_view = NULL;
@@ -5041,7 +5068,8 @@ static void save_config()
   fprintf(file, "\
 #\n\
 # A long option is defined per line with an optional `=' and its argument,\n\
-# when applicable.  Empty lines and lines starting with a `#' are ignored.\n\
+# when applicable.  Options that change patterns and search modes are ignored.\n\
+# Empty lines and lines starting with a `#' are ignored.\n\
 #\n\
 # Try `ug --help' or `ug --help WHAT' for help with options.\n\n");
 
@@ -5133,22 +5161,6 @@ static void save_config()
 
   if (flag_hexdump != NULL)
     fprintf(file, "# Hex dump (columns, no space breaks, no character column, no hex spacing)\nhexdump=%s\n\n", flag_hexdump);
-
-  if (flag_any_line)
-  {
-    fprintf(file, "# Display any line as context\nany-line\n\n");
-  }
-  else if (flag_after_context > 0 && flag_before_context == flag_after_context)
-  {
-    fprintf(file, "# Display context lines\ncontext=%zu\n\n", flag_after_context);
-  }
-  else
-  {
-    if (flag_after_context > 0)
-      fprintf(file, "# Display lines after context\nafter-context=%zu\n\n", flag_after_context);
-    if (flag_before_context > 0)
-      fprintf(file, "# Display lines before context\nbefore-context=%zu\n\n", flag_before_context);
-  }
 
   if (flag_group_separator == NULL)
     fprintf(file, "# Disable group separator for contexts\nno-group-separator\n\n");
@@ -11922,8 +11934,10 @@ void Grep::search(const char *pathname, uint16_t cost)
                 {
                   if (restline_data != NULL)
                   {
+                    if (restline_last + restline_size > first)
+                      restline_size = first - restline_last;
                     out.str(color_sl);
-                    out.str(restline_data, first - restline_last);
+                    out.str(restline_data, restline_size);
                     out.str(color_off);
                   }
 
@@ -12424,7 +12438,11 @@ void Grep::search(const char *pathname, uint16_t cost)
                 if (binary)
                 {
                   if (restline_data != NULL)
-                    out.dump.hex(v_hex_line, restline_last, restline_data, first - restline_last);
+                  {
+                    if (restline_last + restline_size > first)
+                      restline_size = first - restline_last;
+                    out.dump.hex(v_hex_line, restline_last, restline_data, restline_size);
+                  }
 
                   out.dump.hex(v_hex_match, first, begin, size);
                 }
@@ -12432,8 +12450,10 @@ void Grep::search(const char *pathname, uint16_t cost)
                 {
                   if (restline_data != NULL)
                   {
+                    if (restline_last + restline_size > first)
+                      restline_size = first - restline_last;
                     out.str(v_color_sl);
-                    out.str(restline_data, first - restline_last);
+                    out.str(restline_data, restline_size);
                     out.str(color_off);
                   }
 
@@ -12809,15 +12829,24 @@ void Grep::search(const char *pathname, uint16_t cost)
                 if (binary)
                 {
                   if (restline_data != NULL)
-                    out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, first - restline_last);
+                  {
+                    if (restline_last + restline_size > first)
+                      restline_size = first - restline_last;
+                    out.dump.hex(Output::Dump::HEX_LINE, restline_last, restline_data, restline_size);
+                  }
 
                   out.dump.hex(Output::Dump::HEX_MATCH, first, begin, size);
                 }
                 else
                 {
-                  out.str(color_sl);
-                  out.str(restline_data, first - restline_last);
-                  out.str(color_off);
+                  if (restline_data != NULL)
+                  {
+                    if (restline_last + restline_size > first)
+                      restline_size = first - restline_last;
+                    out.str(color_sl);
+                    out.str(restline_data, restline_size);
+                    out.str(color_off);
+                  }
 
                   if (flag_replace != NULL)
                   {
@@ -13240,13 +13269,17 @@ void Grep::search(const char *pathname, uint16_t cost)
                 {
                   if (restline_data != NULL)
                     out.dump.hex(Output::Dump::HEX_CONTEXT_LINE, restline_last, restline_data, first - restline_last);
+
                   out.dump.hex(Output::Dump::HEX_CONTEXT_MATCH, first, begin, size);
                 }
                 else
                 {
-                  out.str(color_cx);
-                  out.str(restline_data, first - restline_last);
-                  out.str(color_off);
+                  if (restline_data != NULL)
+                  {
+                    out.str(color_cx);
+                    out.str(restline_data, first - restline_last);
+                    out.str(color_off);
+                  }
 
                   if (flag_replace != NULL)
                   {
