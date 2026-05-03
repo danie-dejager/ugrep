@@ -127,12 +127,12 @@ class AbstractMatcher {
     static const int EOB      = EOF;        ///< end of buffer meta-char marker
     static const size_t BLOCK = 4096;       ///< minimum remaining unused space in the buffer, to prevent excessive shifting
 #ifndef REFLEX_BUFSZ
-    static const size_t BUFSZ = (256*1024); ///< initial buffer size, at least 4096 bytes
+    static const size_t BUFSZ = (256*1024); ///< initial buffer size, at least 4096 bytes, doubling in size to grow
 #else
     static const size_t BUFSZ = REFLEX_BUFSZ;
 #endif
 #ifndef REFLEX_BOLSZ
-    static const size_t BOLSZ = (32*1024*1024); ///< max (begin of) line size till match to retain, truncate otherwise
+    static const size_t BOLSZ = (256*1024*1024); ///< max (begin of) line size till match to retain, truncate lines otherwise
 #else
     static const size_t BOLSZ = REFLEX_BOLSZ;
 #endif
@@ -1143,9 +1143,9 @@ class AbstractMatcher {
   {
     return txt_ >= buf_ + len ? txt_ - len : buf_;
   }
-  /// Return number of bytes available given number of bytes to fetch ahead, limited by input size and buffer size, DANGER: invalidates previous bol() and text() pointers, use fetch() before bol(), text(), begin(), and end() when those are used.
+  /// Return number of bytes available after the match position given len bytes to fetch ahead, limited by input size and buffer size, DANGER: invalidates previous bol() and text() pointers, use fetch() before bol(), text(), begin(), and end() when those are used.
   inline size_t fetch(size_t len)
-    /// @returns number of bytes available after fetching.
+    /// @returns number of bytes available after fetching after the match position.
   {
     DBGLOG("AbstractMatcher::fetch(%zu)", len);
     if (eof_)
@@ -1159,9 +1159,27 @@ class AbstractMatcher {
     end_ += get(buf_ + end_, len);
     return end_ - pos_;
   }
-  /// Returns the number of bytes in the buffer available to search from the current begin()/text() position.
-  inline size_t avail()
+  /// Returns the number of bytes in the buffer available to search from the current begin()/text() position, when not yet available, read more input to make len bytes available when specified and when the input is large enough.
+  inline size_t avail(size_t len = 0)
   {
+    if (len > 0)
+    {
+      // make len bytes of input available in the buffer to use, when possible
+      while (true)
+      {
+        size_t have = end_ - (txt_ - buf_);
+        if (have >= len || eof_)
+          return have;
+        size_t need = len - have;
+        if (end_ + need + 1 > max_)
+          (void)grow(end_ + need + 1 - max_);
+        size_t n = get(buf_ + end_, need);
+        if (n == 0)
+          eof_ = !wrap();
+        else
+          end_ += n;
+      }
+    }
     if (peek() == EOF)
       return 0;
     return end_ - (txt_ - buf_);
@@ -1471,11 +1489,11 @@ class AbstractMatcher {
     else
     {
       size_t newmax = end_ + need;
-      // adjust max to ignore last byte
+      // readjust max to power of 2 (ignore last +1 byte)
       --max_;
       while (max_ < newmax)
         max_ *= 2;
-      // adjust max to add byte for a terminating \0
+      // adjust max +1 byte for a terminating \0
       ++max_;
       DBGLOG("Expand buffer to %zu bytes", max_);
       // invoke user-defined handler when defined
