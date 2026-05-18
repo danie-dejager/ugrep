@@ -887,6 +887,9 @@ void Query::query()
   VKey::cleanup();
   Screen::cleanup();
 
+  // print the selected output
+  print();
+
   // close the search pipe to terminate the search threads, if still open
   if (!eof_)
   {
@@ -909,13 +912,6 @@ void Query::query()
   stdin_stop = true;
   if (stdin_thread_.joinable())
     stdin_thread_.join();
-
-  // check TTY a final time for color support to print results, if any, this time without --query
-  flag_query = false;
-  terminal();
-
-  // print the selected output
-  print();
 }
 
 // run the query UI

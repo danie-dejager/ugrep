@@ -38,6 +38,15 @@ sed "s/define UGREP_VERSION \"[^\"]*\"/define UGREP_VERSION \"$1\"/" src/ugrep-i
 # this may be needed to reconfigure for glibtoolize for example
 # autoreconf -fvi
 
+# run autoconf and automake stuff with maintainer mode disabled
+aclocal
+autoheader
+rm -f config.guess config.sub ar-lib compile depcomp install-sh missing
+automake --add-missing --foreign
+autoconf
+automake
+touch config.h.in
+
 ./build.sh --with-bzip3 || exit 1
 ./man.sh $1
 pushd completions/bash ; ./compgen.sh > /dev/null ; popd || exit 1
@@ -46,11 +55,6 @@ pushd completions/zsh  ; ./compgen.sh > /dev/null ; popd || exit 1
 
 sed "s/^\(AC_INIT(\[ugrep\],\[\)[0-9.]*/\1$1/" configure.ac > configure.tmp && mv -f configure.tmp configure.ac || exit 1
 
-# run autoconf and automake stuff with maintainer mode disabled
-aclocal
-autoheader
-rm -f config.guess config.sub ar-lib compile depcomp install-sh missing
-automake --add-missing --foreign
 autoconf
 automake
 touch config.h.in
@@ -61,7 +65,7 @@ echo OK
 
 else
 
-echo "Usage: ./makemake.sh 5.v.v"
+echo "Usage: ./makemake.sh 7.v.v"
 exit 1
 
 fi
